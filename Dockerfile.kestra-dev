@@ -1,0 +1,28 @@
+# Kestra + Python + Metaflow development image for integration testing.
+#
+# Build:  docker-compose build
+# Or:     docker build -t kestra-metaflow:latest .
+
+FROM kestra/kestra:latest
+
+USER root
+
+# Install Python and pip
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends python3 python3-pip curl && \
+    ln -sf python3 /usr/bin/python && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Metaflow and the Kestra Python client
+RUN pip3 install --no-cache-dir metaflow kestra
+
+# Copy the metaflow-kestra extension source so it's on the Python path.
+# We use PYTHONPATH rather than pip install to avoid setuptools namespace-package
+# discovery issues that cause the package to build as UNKNOWN-0.0.0.
+COPY metaflow_extensions/ /opt/metaflow-kestra/metaflow_extensions/
+ENV PYTHONPATH=/opt/metaflow-kestra
+
+# Verify
+RUN python3 -c "import metaflow; print('metaflow', metaflow.__version__)"
+RUN python3 -c "import kestra; print('kestra client ok')"
+RUN python3 -c "import sys; sys.path.insert(0, '/opt/metaflow-kestra'); import metaflow_extensions.kestra.plugins.mfextinit_kestra; print('kestra extension found ok')"

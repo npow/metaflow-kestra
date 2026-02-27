@@ -1,0 +1,78 @@
+version: "3.8"
+
+# Kestra standalone server for local development and integration testing.
+#
+# Usage:
+#   docker-compose up -d          # start Kestra
+#   docker-compose logs -f kestra # follow logs
+#   docker-compose down           # stop and remove containers
+#
+# Kestra UI: http://localhost:8080
+#
+# The metaflow-kestra integration tests will deploy flow YAMLs and trigger
+# executions against this server via REST API.
+#
+# Tasks run directly on the Kestra worker process, so Python + metaflow must
+# be installed.  A custom image (see Dockerfile.kestra-dev) handles this.
+
+services:
+  kestra:
+    build:
+      context: .
+      dockerfile: Dockerfile.kestra-dev
+    # Falls back to the official image if the Dockerfile is not present
+    image: kestra-metaflow:latest
+    command: server standalone
+    volumes:
+      - kestra-data:/app/storage
+      - /tmp/kestra:/tmp
+      # Mount the host's .metaflow directory at the SAME absolute path inside
+      # the container so that artifact location paths recorded by Metaflow
+      # (e.g. ":root:/Users/npow/.metaflow") are valid on the host too.
+      - ${HOME}/.metaflow:${HOME}/.metaflow
+      # Mount the project source so tests can reference flow files by their
+      # absolute host path (same path as on the host).
+      - ${HOME}/code:${HOME}/code
+    ports:
+      - "8090:8080"
+      - "8091:8081"
+    environment:
+      KESTRA_CONFIGURATION: |
+        micronaut:
+          security:
+            enabled: false
+        kestra:
+          server:
+            basic-auth:
+              enabled: true
+              username: admin@kestra.io
+              password: Kestra1234!
+          repository:
+            type: memory
+          storage:
+            type: local
+            local:
+              basePath: /app/storage
+          queue:
+            type: memory
+          tasks:
+            tmpDir:
+              path: /tmp/kestra-wd
+          variables:
+            recursive-rendering: false
+      METAFLOW_DEFAULT_METADATA: local
+      METAFLOW_DEFAULT_DATASTORE: local
+      # ${HOME} is expanded from the host environment by docker-compose,
+      # giving the correct parent of the .metaflow bind-mount path.
+      METAFLOW_DATASTORE_SYSROOT_LOCAL: ${HOME}
+      USERNAME: kestra
+      USER: kestra
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  kestra-data: {}

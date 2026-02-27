@@ -110,7 +110,7 @@ class TestParamFlow:
         flow_file = os.path.join(FLOWS_DIR, "param_flow.py")
         out = str(tmp_path / "param.yaml")
         yaml_str = compile_flow(flow_file, out)
-        assert "metaflow_params" in yaml_str
+        assert "metaflow_init" in yaml_str
 
     def test_kestra_input_refs(self, tmp_path):
         flow_file = os.path.join(FLOWS_DIR, "param_flow.py")
@@ -128,7 +128,7 @@ class TestParamFlow:
         assert "greeting" in input_ids
         assert "count" in input_ids
         ids = _task_ids(data)
-        assert "metaflow_params" in ids
+        assert "metaflow_init" in ids
 
 
 # ---------------------------------------------------------------------------

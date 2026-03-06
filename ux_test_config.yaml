@@ -4,5 +4,12 @@
 
 scheduler:
   scheduler_type: kestra
+  deploy_args:
+    kestra_host: "http://localhost:8090"
+    kestra_user: "admin@kestra.io"
+    kestra_password: "Kestra1234!"
 
-compute_env: {}
+compute_env:
+  METAFLOW_DEFAULT_METADATA: local
+  METAFLOW_DEFAULT_DATASTORE: local
+  METAFLOW_DEFAULT_ENVIRONMENT: local

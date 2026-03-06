@@ -326,10 +326,15 @@ def create(
             json.dump(
                 {
                     "name": obj.kestra_flow_name,
-                    "flow_id": flow_id,
-                    "kestra_namespace": kestra_namespace,
                     "flow_name": obj.flow.name,
                     "metadata": "{}",
+                    "additional_info": {
+                        "flow_id": flow_id,
+                        "kestra_namespace": kestra_namespace,
+                        "kestra_host": kestra_host,
+                        "kestra_user": kestra_user,
+                        "kestra_password": kestra_password,
+                    },
                 },
                 f,
             )
@@ -444,6 +449,12 @@ def run(
     help="Kestra namespace the flow is deployed in.",
 )
 @click.option(
+    "--flow-id",
+    default=None,
+    hidden=True,
+    help="Kestra flow ID to trigger (overrides computed default).",
+)
+@click.option(
     "--deployer-attribute-file",
     default=None,
     hidden=True,
@@ -464,10 +475,12 @@ def trigger(
     kestra_password,
     kestra_token,
     kestra_namespace,
+    flow_id,
     deployer_attribute_file,
     run_params,
 ):
-    flow_id = obj.kestra_flow_name.lower().replace(".", "-").replace("_", "-")
+    if flow_id is None:
+        flow_id = obj.kestra_flow_name.lower().replace(".", "-").replace("_", "-")
 
     # Parse run params into a dict (key=value pairs)
     params = {}
@@ -485,7 +498,9 @@ def trigger(
     obj.echo("Execution started: *%s*" % execution_url)
 
     if deployer_attribute_file:
-        pathspec = "%s/kestra-%s" % (obj.flow.name, execution_id)
+        import hashlib as _hashlib
+        _run_id = "kestra-" + _hashlib.md5(execution_id.encode()).hexdigest()[:16]
+        pathspec = "%s/%s" % (obj.flow.name, _run_id)
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {

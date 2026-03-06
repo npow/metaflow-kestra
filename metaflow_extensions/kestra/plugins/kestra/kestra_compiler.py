@@ -606,8 +606,8 @@ Kestra.outputs({"run_id": run_id, "params_task_id": params_task_id})
         ]
         for deco in self.with_decorators:
             top_args.append('"--with=%s"' % deco)
-        for tag in self._tags:
-            top_args.append('"--tag=%s"' % tag)
+        # Note: --tag is a step-level option (after the step subcommand), not top-level.
+        # Tags are added to step_args below.
         # Add any step-level decorator specs (e.g. @kubernetes forwarded via --with)
         for deco_spec in self._get_decorator_specs(node):
             top_args.append('"--with=%s"' % deco_spec)
@@ -624,6 +624,8 @@ Kestra.outputs({"run_id": run_id, "params_task_id": params_task_id})
             '"--retry-count"', '"0"',
             '"--max-user-code-retries"', '"%d"' % max_retries,
         ]
+        for tag in self._tags:
+            step_args += ['"--tag"', '"%s"' % tag]
         if is_foreach_body:
             step_args += ['"--split-index"', 'str(split_index)']
         step_args_str = ", ".join(step_args)

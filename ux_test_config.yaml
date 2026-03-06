@@ -1,0 +1,8 @@
+######################################
+# UX Test Config for metaflow-kestra
+######################################
+
+scheduler:
+  scheduler_type: kestra
+
+compute_env: {}

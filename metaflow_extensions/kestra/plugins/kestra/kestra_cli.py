@@ -5,8 +5,8 @@ Registered via mfextinit_kestra.py as the `kestra` CLI group.
 
 Commands
 --------
-  create   Compile the flow to a Kestra YAML file (no server needed).
-  deploy   Compile and upload the flow to a running Kestra instance.
+  compile  Compile the flow to a Kestra YAML file (no server needed).
+  create   Compile and upload the flow to a running Kestra instance.
   run      Compile, deploy, trigger an execution and stream its logs.
 """
 
@@ -123,7 +123,7 @@ def kestra(obj, name=None):
 # create
 # ---------------------------------------------------------------------------
 
-@kestra.command(help="Compile this flow to a Kestra YAML file.")
+@kestra.command(name="compile", help="Compile this flow to a Kestra YAML file.")
 @click.argument("file", required=True)
 @click.option("--tag", "tags", multiple=True, help="Tag all Metaflow run objects.")
 @click.option(
@@ -168,7 +168,7 @@ def kestra(obj, name=None):
     help="Deploy to the @project production branch.",
 )
 @click.pass_obj
-def create(
+def compile(
     obj,
     file,
     tags,
@@ -215,7 +215,7 @@ def create(
 
     obj.echo(
         "Flow *{flow_name}* compiled to Kestra YAML successfully → *{file}*\n"
-        "Deploy with: python {flow_file} kestra deploy {file}".format(
+        "Deploy with: python {flow_file} kestra create".format(
             flow_name=obj.kestra_flow_name,
             file=file,
             flow_file=os.path.basename(sys.argv[0]),
@@ -225,7 +225,7 @@ def create(
 
 
 # ---------------------------------------------------------------------------
-# deploy
+# create
 # ---------------------------------------------------------------------------
 
 @kestra.command(help="Compile and deploy this flow to a running Kestra instance.")
@@ -274,7 +274,7 @@ def create(
     help="Write deployment info JSON here (used by Metaflow Deployer API).",
 )
 @click.pass_obj
-def deploy(
+def create(
     obj,
     kestra_host,
     kestra_user,

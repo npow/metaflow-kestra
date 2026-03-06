@@ -66,15 +66,15 @@ class KestraDeployedFlow(DeployedFlow):
         run_params = tuple("%s=%s" % (k, v) for k, v in kwargs.items())
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
+            trigger_kwargs = dict(deployer_attribute_file=attribute_file_path)
+            if run_params:
+                trigger_kwargs["run_params"] = run_params
             command = get_lower_level_group(
                 self.deployer.api,
                 self.deployer.top_level_kwargs,
                 self.deployer.TYPE,
                 self.deployer.deployer_kwargs,
-            ).trigger(
-                deployer_attribute_file=attribute_file_path,
-                run_params=run_params,
-            )
+            ).trigger(**trigger_kwargs)
 
             pid = self.deployer.spm.run_command(
                 [sys.executable, *command],

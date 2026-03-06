@@ -277,6 +277,97 @@ class TestWithDecorators:
 
 
 # ---------------------------------------------------------------------------
+# Conditional flow (split-switch)
+# ---------------------------------------------------------------------------
+
+class TestConditionalFlow:
+    def test_compiles_without_error(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert yaml_str
+
+    def test_switch_task_present(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert "io.kestra.plugin.core.flow.Switch" in yaml_str
+
+    def test_switch_task_id(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # Switch task is named switch_<step>
+        assert "switch_start" in yaml_str
+
+    def test_branch_taken_output(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # Start step emits branch_taken output
+        assert "branch_taken" in yaml_str
+
+    def test_switch_routes_via_branch_taken(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert "outputs.start.vars.branch_taken" in yaml_str
+
+    def test_both_branches_in_switch_cases(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        switch = next(t for t in data["tasks"] if t["id"] == "switch_start")
+        assert "high_branch" in switch["cases"]
+        assert "low_branch" in switch["cases"]
+
+    def test_branch_tasks_inside_switch(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        switch = next(t for t in data["tasks"] if t["id"] == "switch_start")
+        high_ids = [t["id"] for t in switch["cases"]["high_branch"]]
+        low_ids = [t["id"] for t in switch["cases"]["low_branch"]]
+        assert "high_branch" in high_ids
+        assert "low_branch" in low_ids
+
+    def test_convergence_step_after_switch(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        top_level_ids = [t["id"] for t in data["tasks"]]
+        # 'after' and 'end' are top-level tasks (not inside the Switch)
+        assert "after" in top_level_ids
+        assert "end" in top_level_ids
+
+    def test_convergence_uses_null_coalescing(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # 'after' step uses Kestra's null-coalescing (??) to pick whichever
+        # branch ran; the non-running branch's output is null/absent.
+        assert "high_branch.vars.input_path ?? outputs.low_branch.vars.input_path" in yaml_str
+
+    def test_yaml_valid(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        assert data is not None
+        assert data["id"] == "conditionalflow"
+
+    def test_no_timeout_on_regular_steps(self, tmp_path):
+        """Steps without @timeout should not get a Kestra timeout."""
+        flow_file = os.path.join(FLOWS_DIR, "conditional_flow.py")
+        out = str(tmp_path / "conditional.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert "timeout" not in yaml_str
+
+
+# ---------------------------------------------------------------------------
 # Custom kestra-namespace
 # ---------------------------------------------------------------------------
 

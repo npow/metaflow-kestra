@@ -67,8 +67,14 @@ class KestraInternalDecorator(StepDecorator):
         self, step_name, flow, graph, is_task_ok, retry_count, max_user_code_retries
     ):
         output = {"task_ok": is_task_ok}
-        if graph[step_name].type == "foreach":
+        node = graph[step_name]
+        if node.type == "foreach":
             output["foreach_cardinality"] = flow._foreach_num_splits
+        if node.type == "split-switch":
+            # Record which branch was chosen so the Kestra Switch task can route.
+            transition = getattr(flow, "_transition", None)
+            if transition and transition[0]:
+                output["branch_taken"] = transition[0][0]
         output_file = os.environ.get("METAFLOW_KESTRA_OUTPUT_FILE")
         if output_file:
             with open(output_file, "w") as f:

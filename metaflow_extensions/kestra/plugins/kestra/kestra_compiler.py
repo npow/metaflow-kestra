@@ -2,18 +2,21 @@
 Kestra YAML compiler for Metaflow flows.
 
 Converts a Metaflow FlowGraph into a complete Kestra flow YAML definition.
-Each Metaflow step becomes a `io.kestra.plugin.scripts.python.Script` task.
-Foreach fan-out uses `io.kestra.plugin.core.flow.ForEach` and split/join
-uses `io.kestra.plugin.core.flow.Parallel`.
+Each Metaflow step becomes an `io.kestra.plugin.scripts.python.Script` task.
 
-Generated flow structure:
-  metaflow_init        - computes a stable run_id from Kestra's execution.id
-  metaflow_params      - initialises flow parameters (only if flow has params)
-  <step>...            - one task per Metaflow step, with nesting for
-                         foreach (ForEach) and split/join (Parallel)
+Supported Metaflow graph patterns:
 
-Artifact hints are embedded in every task output so that users can copy
-the Metaflow Client snippet directly from the Kestra UI.
+  linear       - sequential steps
+  split/join   - io.kestra.plugin.core.flow.Parallel wraps the branches
+  foreach      - io.kestra.plugin.core.flow.ForEach with one body task
+  split-switch - io.kestra.plugin.core.flow.Switch routes to the chosen branch;
+                 the convergence step uses Pebble null-coalescing (??) to pick
+                 whichever branch's output is populated
+
+Generated top-level task order:
+  metaflow_init  - computes a stable run_id from Kestra's execution.id and
+                   runs `metaflow init` to create the _parameters artifact
+  <step>...      - one task per step (foreach body / branch steps are nested)
 """
 
 import json
@@ -309,6 +312,18 @@ class KestraCompiler:
             if join_step:
                 self._visit_node(join_step, out, visited, indent=indent, context=context)
 
+        elif ntype == "split-switch":
+            # Run the switch step (which writes branch_taken to the output JSON)
+            out.append(self._render_step_task(node, indent=indent, context=context))
+            # Emit a Kestra Switch task that routes to the correct branch
+            out.append(
+                self._render_switch_wrapper(node, visited=visited, indent=indent)
+            )
+            # Find the join step for this split-switch and continue from there
+            join_step = self._find_switch_join_step(step_name)
+            if join_step:
+                self._visit_node(join_step, out, visited, indent=indent, context=context)
+
         elif ntype == "join":
             out.append(self._render_step_task(node, indent=indent, context=context))
             for next_step in node.out_funcs:
@@ -418,19 +433,69 @@ class KestraCompiler:
 
         return "\n".join(lines)
 
-    def _visit_branch(self, step_name: str, out: list, visited: set, indent: int):
-        """Visit steps in a split branch until reaching a join node."""
+    def _render_switch_wrapper(self, switch_node, visited: set, indent: int) -> str:
+        """Emit a Kestra Switch task routing conditional branches for a split-switch node."""
+        pad = " " * indent
+        wrapper_id = "switch_%s" % switch_node.name
+        # Find the convergence step so branch visitors can stop before it
+        convergence_step = self._find_switch_join_step(switch_node.name)
+
+        lines = [
+            "%s- id: %s" % (pad, wrapper_id),
+            "%s  type: io.kestra.plugin.core.flow.Switch" % pad,
+            "%s  value: \"{{ outputs.%s.vars.branch_taken }}\"" % (pad, switch_node.name),
+            "%s  cases:" % pad,
+        ]
+
+        for branch_step in switch_node.out_funcs:
+            branch_tasks = []
+            self._visit_branch(
+                branch_step, branch_tasks, visited, indent + 6,
+                stop_at=convergence_step,
+            )
+            if branch_tasks:
+                lines.append("%s    %s:" % (pad, branch_step))
+                lines.extend(branch_tasks)
+
+        return "\n".join(lines)
+
+    def _find_switch_join_step(self, switch_step_name: str) -> Optional[str]:
+        """Find the convergence step that follows a split-switch step.
+
+        For split-switch nodes, all branches eventually converge at a single
+        downstream step (which may be a join or a linear step with multiple
+        in_funcs). We find it by following branch steps to their destination.
+        """
+        switch_node = self.graph[switch_step_name]
+        for branch_step in switch_node.out_funcs:
+            branch_node = self.graph[branch_step]
+            for next_step in branch_node.out_funcs:
+                return next_step
+        return None
+
+    def _visit_branch(
+        self,
+        step_name: str,
+        out: list,
+        visited: set,
+        indent: int,
+        stop_at: Optional[str] = None,
+    ):
+        """Visit steps in a split branch until reaching a join or convergence node."""
         if step_name in visited:
             return
         node = self.graph[step_name]
+        # Stop at join nodes (parallel split) or the designated convergence step
         if node.type == "join":
+            return
+        if stop_at is not None and step_name == stop_at:
             return
         visited.add(step_name)
         out.append(self._render_step_task(node, indent=indent, context={}))
         for next_step in node.out_funcs:
             next_node = self.graph[next_step]
-            if next_node.type != "join":
-                self._visit_branch(next_step, out, visited, indent)
+            if next_node.type != "join" and next_step != stop_at:
+                self._visit_branch(next_step, out, visited, indent, stop_at=stop_at)
 
     # ------------------------------------------------------------------
     # Script generators
@@ -587,6 +652,16 @@ if out.get("foreach_cardinality", 0) > 0:
     kestra_out["foreach_values"] = list(range(fc))
 """
 
+        # ----------------------------------------------------------------
+        # Split-switch outputs block: propagate branch_taken
+        # ----------------------------------------------------------------
+        switch_outputs = ""
+        if ntype == "split-switch":
+            switch_outputs = """\
+if out.get("branch_taken"):
+    kestra_out["branch_taken"] = out["branch_taken"]
+"""
+
         init_input_block = ""
 
         # ----------------------------------------------------------------
@@ -629,12 +704,29 @@ except Exception:
 """ % {"flow_name": flow_name, "step_name": step_name}
 
         # ----------------------------------------------------------------
-        # Foreach join: build input_paths from all body task IDs
+        # Join / conditional-convergence: build input_paths based on split type
         # ----------------------------------------------------------------
+        # For join steps and steps that are the convergence point after a
+        # split-switch, we need custom input_paths logic rather than the
+        # default single-parent reference.
         join_input_block = ""
-        if ntype == "join":
+        switch_parent = self._find_switch_parent_for_join(node)
+        if ntype == "join" or switch_parent is not None:
             split_parents = getattr(node, "split_parents", [])
-            if split_parents:
+            if switch_parent is not None:
+                # split-switch join — only one branch ran.
+                # Use Kestra's Pebble null-coalescing (??) inside a single
+                # template expression to pick whichever branch's output is set.
+                branch_steps = list(self.graph[switch_parent].out_funcs)
+                # Build: {{ outputs.b1.vars.input_path ?? outputs.b2.vars.input_path }}
+                coalesce_inner = " ?? ".join(
+                    "outputs.%s.vars.input_path" % b
+                    for b in branch_steps
+                )
+                join_input_block = (
+                    'input_paths = "{{ %s }}"\n' % coalesce_inner
+                )
+            elif split_parents:
                 innermost = split_parents[-1]
                 innermost_node = self.graph[innermost]
                 if innermost_node.type == "foreach":
@@ -733,7 +825,7 @@ kestra_out = {
     "task_id": task_id,
     "input_path": run_id + "/%(step_name)s/" + task_id,
 }
-%(foreach_outputs)s
+%(foreach_outputs)s%(switch_outputs)s
 %(artifact_hint)s
 Kestra.outputs(kestra_out)
 """ % {
@@ -747,6 +839,7 @@ Kestra.outputs(kestra_out)
             "step_args": step_args_str,
             "step_name": step_name,
             "foreach_outputs": foreach_outputs,
+            "switch_outputs": switch_outputs,
             "artifact_hint": artifact_hint_block,
         }
 
@@ -818,6 +911,10 @@ Kestra.outputs(kestra_out)
             # Handled via join_input_block in _step_script
             return '""'
 
+        if self._find_switch_parent_for_join(node):
+            # Conditional convergence — handled via join_input_block in _step_script
+            return '""'
+
         if len(in_funcs) == 1:
             return '"{{ outputs.%s.vars.input_path }}"' % in_funcs[0]
 
@@ -828,6 +925,20 @@ Kestra.outputs(kestra_out)
     # ------------------------------------------------------------------
     # Graph utilities
     # ------------------------------------------------------------------
+
+    def _find_switch_parent_for_join(self, node) -> Optional[str]:
+        """Return the split-switch step name that converges at this node, or None.
+
+        This handles both traditional join steps (type='join') and linear steps
+        that have multiple in_funcs due to conditional branching (type='linear').
+        """
+        for in_step in node.in_funcs:
+            in_node = self.graph[in_step]
+            for parent in in_node.in_funcs:
+                parent_node = self.graph[parent]
+                if parent_node.type == "split-switch":
+                    return parent
+        return None
 
     def _find_join_step(self, split_step_name: str) -> Optional[str]:
         """Find the join step corresponding to a split step."""
@@ -900,13 +1011,18 @@ Kestra.outputs(kestra_out)
             return None
 
     def _get_timeout(self, node) -> Optional[int]:
-        try:
-            if get_run_time_limit_for_task is not None:
-                limit = get_run_time_limit_for_task(node.decorators)
-                if limit:
-                    return limit
-        except Exception:
-            pass
+        # Only emit a Kestra task timeout when the step has an explicit @timeout
+        # decorator. The Metaflow default runtime limit (120h) should not be
+        # forwarded as a Kestra timeout because it would appear on every task.
+        for deco in node.decorators:
+            if deco.name == "timeout":
+                try:
+                    if get_run_time_limit_for_task is not None:
+                        limit = get_run_time_limit_for_task(node.decorators)
+                        if limit:
+                            return limit
+                except Exception:
+                    pass
         return None
 
     def _get_retries(self, node) -> int:

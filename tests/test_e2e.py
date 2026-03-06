@@ -295,6 +295,57 @@ class TestForeachE2E:
 
 
 # ---------------------------------------------------------------------------
+# Conditional flow E2E
+# ---------------------------------------------------------------------------
+
+class TestConditionalE2E:
+    FLOW_FILE = os.path.join(FLOWS_DIR, "conditional_flow.py")
+    KESTRA_NS = "metaflow"
+    FLOW_ID = "conditionalflow"
+
+    def test_deploy_and_run_low_branch(self, kestra_client, tmp_path):
+        """Default value=42 should take the low branch."""
+        yaml_str = compile_flow(self.FLOW_FILE, str(tmp_path / "conditional.yaml"))
+        _deploy_yaml(kestra_client, yaml_str)
+        exec_id = _trigger(kestra_client, self.KESTRA_NS, self.FLOW_ID)
+        final_state = _wait(kestra_client, exec_id, timeout_secs=180)
+        assert final_state == "SUCCESS", "Execution ended with state: %s" % final_state
+
+    def test_low_branch_artifacts(self, kestra_client, tmp_path):
+        """With value=42 (< 50), low_branch should execute and label should be 'low'."""
+        yaml_str = compile_flow(self.FLOW_FILE, str(tmp_path / "conditional_low.yaml"))
+        _deploy_yaml(kestra_client, yaml_str)
+        exec_id = _trigger(kestra_client, self.KESTRA_NS, self.FLOW_ID)
+        _wait(kestra_client, exec_id, timeout_secs=180)
+
+        run_id = _get_run_id_from_execution(kestra_client, exec_id)
+        assert run_id is not None
+        run = _get_metaflow_run("ConditionalFlow", run_id)
+        assert run is not None
+        end_task = run["end"].task
+        assert end_task.data.label == "low"
+        assert end_task.data.doubled == 84  # 42 * 2
+
+    def test_high_branch_artifacts(self, kestra_client, tmp_path):
+        """With value=75 (>= 50), high_branch should execute and label should be 'high'."""
+        yaml_str = compile_flow(self.FLOW_FILE, str(tmp_path / "conditional_high.yaml"))
+        _deploy_yaml(kestra_client, yaml_str)
+        exec_id = _trigger(
+            kestra_client, self.KESTRA_NS, self.FLOW_ID,
+            inputs={"value": 75},
+        )
+        _wait(kestra_client, exec_id, timeout_secs=180)
+
+        run_id = _get_run_id_from_execution(kestra_client, exec_id)
+        assert run_id is not None
+        run = _get_metaflow_run("ConditionalFlow", run_id)
+        assert run is not None
+        end_task = run["end"].task
+        assert end_task.data.label == "high"
+        assert end_task.data.doubled == 150  # 75 * 2
+
+
+# ---------------------------------------------------------------------------
 # Schedule flow E2E (just deploy, don't wait for trigger)
 # ---------------------------------------------------------------------------
 

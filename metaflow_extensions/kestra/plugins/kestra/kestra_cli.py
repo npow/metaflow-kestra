@@ -51,12 +51,6 @@ def _validate_workflow(flow, graph):
                 "Step *%s* uses @parallel which is not supported with Kestra." % node.name
             )
         for deco in node.decorators:
-            if deco.name == "condition":
-                raise NotSupportedException(
-                    "Step *%s* uses @condition which is not supported with Kestra. "
-                    "Conditional branching via @condition produces incorrect generated "
-                    "code and must be removed." % node.name
-                )
             if deco.name == "resources":
                 warnings.warn(
                     "Step *%s* uses @resources. Resource requirements are passed through "
@@ -96,10 +90,7 @@ def _validate_foreach(graph):
                 "(Kestra's EachSequential/concurrentEach tasks do not support nesting)." % node.name
             )
         new_inside = inside_foreach or (node.type == "foreach")
-        if node.type in ("start", "linear", "join", "foreach"):
-            for next_step in node.out_funcs:
-                _traverse(graph[next_step], new_inside)
-        elif node.type == "split":
+        if node.type in ("start", "linear", "join", "foreach", "split", "split-switch"):
             for next_step in node.out_funcs:
                 _traverse(graph[next_step], new_inside)
 

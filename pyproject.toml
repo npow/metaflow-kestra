@@ -1,6 +1,6 @@
 [project]
 name = "metaflow-kestra"
-version = "0.2.0"
+version = "0.3.0"
 description = "Run Metaflow flows as Kestra workflows"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -48,4 +48,5 @@ testpaths = ["tests"]
 pythonpath = ["tests"]
 markers = [
     "integration: requires external Kestra server (docker-compose)",
+    "e2e: alias for integration tests requiring external Kestra server",
 ]

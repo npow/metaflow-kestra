@@ -10,9 +10,11 @@ Commands
   run      Compile, deploy, trigger an execution and stream its logs.
 """
 
+import json
 import os
 import sys
 import time
+import warnings
 
 from metaflow._vendor import click
 from metaflow.exception import MetaflowException
@@ -48,6 +50,21 @@ def _validate_workflow(flow, graph):
             raise NotSupportedException(
                 "Step *%s* uses @parallel which is not supported with Kestra." % node.name
             )
+        for deco in node.decorators:
+            if deco.name == "condition":
+                raise NotSupportedException(
+                    "Step *%s* uses @condition which is not supported with Kestra. "
+                    "Conditional branching via @condition produces incorrect generated "
+                    "code and must be removed." % node.name
+                )
+            if deco.name == "resources":
+                warnings.warn(
+                    "Step *%s* uses @resources. Resource requirements are passed through "
+                    "as --with flags but are not enforced by Kestra scheduling — "
+                    "configure resources on your Kestra worker directly." % node.name,
+                    UserWarning,
+                    stacklevel=2,
+                )
         if any(d.name == "batch" for d in node.decorators):
             raise NotSupportedException(
                 "Step *%s* uses @batch which is not supported with Kestra. "
@@ -75,7 +92,8 @@ def _validate_foreach(graph):
         if node.type == "foreach" and inside_foreach:
             raise NotSupportedException(
                 "Step *%s* is a foreach step inside another foreach. "
-                "Nested foreach is not supported with Kestra." % node.name
+                "Nested foreach is not supported with Kestra "
+                "(Kestra's EachSequential/concurrentEach tasks do not support nesting)." % node.name
             )
         new_inside = inside_foreach or (node.type == "foreach")
         if node.type in ("start", "linear", "join", "foreach"):
@@ -258,6 +276,12 @@ def create(
 @click.option("--workflow-timeout", default=None, type=int)
 @click.option("--branch", default=None)
 @click.option("--production", is_flag=True, default=False)
+@click.option(
+    "--deployer-attribute-file",
+    default=None,
+    hidden=True,
+    help="Write deployment info JSON here (used by Metaflow Deployer API).",
+)
 @click.pass_obj
 def deploy(
     obj,
@@ -273,6 +297,7 @@ def deploy(
     workflow_timeout,
     branch,
     production,
+    deployer_attribute_file,
 ):
     _validate_workflow(obj.flow, obj.graph)
 
@@ -303,6 +328,20 @@ def deploy(
 
     client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
     _deploy_flow(client, yaml_content, kestra_namespace, obj)
+
+    if deployer_attribute_file:
+        flow_id = compiler._flow_name.lower().replace(".", "-").replace("_", "-")
+        with open(deployer_attribute_file, "w") as f:
+            json.dump(
+                {
+                    "name": obj.kestra_flow_name,
+                    "flow_id": flow_id,
+                    "kestra_namespace": kestra_namespace,
+                    "flow_name": obj.flow.name,
+                    "metadata": "{}",
+                },
+                f,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +435,77 @@ def run(
     else:
         obj.echo("Execution ID: %s" % execution_id)
         obj.echo("Track it at: %s" % execution_url)
+
+
+# ---------------------------------------------------------------------------
+# trigger
+# ---------------------------------------------------------------------------
+
+@kestra.command(help="Trigger a run for a previously deployed Kestra flow.")
+@click.option("--kestra-host", default="http://localhost:8080", show_default=True, envvar="KESTRA_HOST")
+@click.option("--kestra-user", default=None, envvar="KESTRA_USER")
+@click.option("--kestra-password", default=None, envvar="KESTRA_PASSWORD")
+@click.option("--kestra-token", default=None, envvar="KESTRA_API_TOKEN")
+@click.option(
+    "--kestra-namespace",
+    default="metaflow",
+    show_default=True,
+    help="Kestra namespace the flow is deployed in.",
+)
+@click.option(
+    "--deployer-attribute-file",
+    default=None,
+    hidden=True,
+    help="Write triggered-run info JSON here (used by Metaflow Deployer API).",
+)
+@click.option(
+    "--run-param",
+    "run_params",
+    multiple=True,
+    default=None,
+    help="Flow parameter as key=value (repeatable).",
+)
+@click.pass_obj
+def trigger(
+    obj,
+    kestra_host,
+    kestra_user,
+    kestra_password,
+    kestra_token,
+    kestra_namespace,
+    deployer_attribute_file,
+    run_params,
+):
+    flow_id = obj.kestra_flow_name.lower().replace(".", "-").replace("_", "-")
+
+    # Parse run params into a dict (key=value pairs)
+    params = {}
+    for kv in run_params:
+        k, _, v = kv.partition("=")
+        params[k.strip()] = v.strip()
+
+    client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
+
+    obj.echo("Triggering execution of *%s* in namespace *%s*..." % (flow_id, kestra_namespace), bold=True)
+    execution_id = _trigger_execution(client, kestra_namespace, flow_id)
+    execution_url = "%s/ui/executions/%s/%s/%s" % (
+        kestra_host, kestra_namespace, flow_id, execution_id
+    )
+    obj.echo("Execution started: *%s*" % execution_url)
+
+    if deployer_attribute_file:
+        pathspec = "%s/kestra-%s" % (obj.flow.name, execution_id)
+        with open(deployer_attribute_file, "w") as f:
+            json.dump(
+                {
+                    "pathspec": pathspec,
+                    "name": obj.kestra_flow_name,
+                    "execution_id": execution_id,
+                    "execution_url": execution_url,
+                    "metadata": "{}",
+                },
+                f,
+            )
 
 
 # ---------------------------------------------------------------------------

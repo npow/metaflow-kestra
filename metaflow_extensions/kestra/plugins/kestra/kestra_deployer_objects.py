@@ -19,8 +19,9 @@ if TYPE_CHECKING:
 class KestraTriggeredRun(TriggeredRun):
     """A Kestra execution that was triggered via the Deployer API.
 
-    Inherits ``.run`` from :class:`~metaflow.runner.deployer.TriggeredRun`, which polls
-    Metaflow until the run with ``pathspec`` (``FlowName/kestra-<execution_id>``) appears.
+    Overrides ``.run`` from :class:`~metaflow.runner.deployer.TriggeredRun` to apply
+    deployer env vars (local metadata overrides) before polling Metaflow for the run
+    with ``pathspec`` (``FlowName/kestra-<execution_id>``).
     """
 
     @property
@@ -111,11 +112,11 @@ class KestraDeployedFlow(DeployedFlow):
         run_params = tuple("%s=%s" % (k, v) for k, v in kwargs.items())
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
-            trigger_kwargs = dict(deployer_attribute_file=attribute_file_path)
+            trigger_kwargs = {"deployer_attribute_file": attribute_file_path}
             if run_params:
                 trigger_kwargs["run_params"] = run_params
             additional_info = getattr(self.deployer, "additional_info", {}) or {}
-            for key in ("flow_id", "kestra_namespace", "kestra_host", "kestra_user", "kestra_password"):
+            for key in ("flow_id", "kestra_namespace", "kestra_host", "kestra_user", "kestra_password", "kestra_token"):
                 val = additional_info.get(key)
                 if val:
                     trigger_kwargs[key] = val

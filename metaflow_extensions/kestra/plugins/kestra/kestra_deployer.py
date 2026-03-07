@@ -34,12 +34,8 @@ class KestraDeployer(DeployerImpl):
     TYPE: ClassVar[Optional[str]] = "kestra"
 
     def __init__(self, deployer_kwargs: Dict[str, str], **kwargs) -> None:
-        self._deployer_kwargs = deployer_kwargs
+        self.deployer_kwargs = deployer_kwargs
         super().__init__(**kwargs)
-
-    @property
-    def deployer_kwargs(self) -> Dict[str, str]:
-        return self._deployer_kwargs
 
     @staticmethod
     def deployed_flow_type() -> Type["KestraDeployedFlow"]:
@@ -58,8 +54,6 @@ class KestraDeployer(DeployerImpl):
             Kestra namespace to deploy into.
         max_workers : int, optional
             Maximum concurrent ForEach body tasks.
-        deployer_attribute_file : str, optional
-            Write deployment info JSON here (Metaflow Deployer API internal).
 
         Returns
         -------

@@ -28,9 +28,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "pytest-cov>=4.0",
     "pytest-timeout>=2.0",
     "requests>=2.28",
     "pyyaml>=6.0",
+    "ruff>=0.4",
 ]
 
 [project.urls]
@@ -43,6 +45,22 @@ include = ["metaflow_extensions*"]
 [build-system]
 requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["F", "E", "W", "B", "I", "C4"]
+ignore = ["E501", "B008", "B904"]
+
+[tool.coverage.run]
+source = ["metaflow_extensions"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

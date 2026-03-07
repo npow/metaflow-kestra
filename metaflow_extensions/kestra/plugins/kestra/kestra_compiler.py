@@ -101,7 +101,7 @@ class KestraCompiler:
         self.username = username or ""
         self.max_workers = max_workers
         self.with_decorators = with_decorators or []
-        self.workflow_timeout = workflow_timeout
+        self._workflow_timeout = workflow_timeout
         self.kestra_namespace = kestra_namespace
         self.branch = branch
         self.production = production
@@ -145,7 +145,7 @@ class KestraCompiler:
         schedule = self._get_schedule()
         if schedule:
             sections.append(self._render_triggers(schedule))
-        sections.append(self._render_tasks())
+        sections.append(self._render_tasks(params))
         return "\n\n".join(sections) + "\n"
 
     # ------------------------------------------------------------------
@@ -177,8 +177,10 @@ class KestraCompiler:
             "  metaflow.generated: \"true\"",
         ]
         if self._project_info:
-            lines.append("  metaflow.project: %s" % self._project_info["name"])
-            lines.append("  metaflow.branch: %s" % self._project_info["branch"])
+            lines.append("  metaflow.project: \"%s\"" % self._project_info["name"].replace("\\", "\\\\").replace('"', '\\"'))
+            lines.append("  metaflow.branch: \"%s\"" % self._project_info["branch"].replace("\\", "\\\\").replace('"', '\\"'))
+        if self._workflow_timeout:
+            lines.append("timeout: %s" % _iso_duration(self._workflow_timeout))
         return "\n".join(lines)
 
     def _render_variables(self) -> str:
@@ -217,7 +219,8 @@ class KestraCompiler:
                 lines.append("    defaults: %s" % json.dumps(default))
         return "\n".join(lines)
 
-    def _render_plugin_defaults(self) -> str:
+    @staticmethod
+    def _render_plugin_defaults() -> str:
         lines = [
             "pluginDefaults:",
             "  - type: io.kestra.plugin.scripts.python.Script",
@@ -242,10 +245,10 @@ class KestraCompiler:
                 lines.append("    timezone: %s" % schedule["timezone"])
         return "\n".join(lines)
 
-    def _render_tasks(self) -> str:
+    def _render_tasks(self, params: dict) -> str:
         lines = ["tasks:"]
         # Init task — always first; runs metaflow init to create _parameters artifact
-        lines.append(self._render_init_task(indent=2))
+        lines.append(self._render_init_task(indent=2, params=params))
         # Walk the graph
         tasks_yaml = []
         visited = set()
@@ -335,8 +338,8 @@ class KestraCompiler:
     # Task renderers
     # ------------------------------------------------------------------
 
-    def _render_init_task(self, indent: int) -> str:
-        script = self._init_script()
+    def _render_init_task(self, indent: int, params: dict) -> str:
+        script = self._init_script(params)
         return self._task_block(
             task_id=self.INIT_TASK_ID,
             task_type="io.kestra.plugin.scripts.python.Script",
@@ -475,8 +478,7 @@ class KestraCompiler:
     # Script generators
     # ------------------------------------------------------------------
 
-    def _init_script(self) -> str:
-        params = self._get_parameters()
+    def _init_script(self, params: dict) -> str:
         # Build param args for init command (parameters are passed via Kestra inputs)
         param_args_lines = []
         for var in params:
@@ -545,7 +547,6 @@ import json, os, subprocess, sys, tempfile
 from kestra import Kestra
 
 FLOW_FILE = "{{ vars.FLOW_FILE }}"
-METADATA_TYPE = "{{ vars.METADATA_TYPE }}"
 DATASTORE_TYPE = "{{ vars.DATASTORE_TYPE }}"
 DATASTORE_ROOT = "{{ vars.DATASTORE_ROOT }}"
 if DATASTORE_TYPE == "local":
@@ -699,10 +700,12 @@ input_paths = ",".join(
             '"--with=kestra_internal"',
         ]
         for deco in self.with_decorators:
-            args.append('"--with=%s"' % deco)
+            args.append('"--with=%s"' % deco.replace("\\", "\\\\").replace('"', '\\"'))
+        if self.namespace:
+            args.append('"--namespace=%s"' % self.namespace.replace("\\", "\\\\").replace('"', '\\"'))
         # Note: --tag is a step-level option, not top-level; tags go in step_args.
         for spec in self._get_decorator_specs(node):
-            args.append('"--with=%s"' % spec)
+            args.append('"--with=%s"' % spec.replace("\\", "\\\\").replace('"', '\\"'))
         return ", ".join(args)
 
     def _build_step_args_str(self, step_name: str, max_retries: int, is_foreach_body: bool) -> str:
@@ -716,7 +719,8 @@ input_paths = ",".join(
             '"--max-user-code-retries"', '"%d"' % max_retries,
         ]
         for tag in self._tags:
-            args += ['"--tag"', '"%s"' % tag]
+            safe_tag = tag.replace("\\", "\\\\").replace('"', '\\"')
+            args += ['"--tag"', '"%s"' % safe_tag]
         if is_foreach_body:
             args += ['"--split-index"', 'str(split_index)']
         return ", ".join(args)
@@ -727,7 +731,10 @@ input_paths = ",".join(
         if not env_deco:
             return ""
         env_vars = env_deco[0].attributes.get("vars", {})
-        lines = ['    "%s": "%s",' % (k, v) for k, v in env_vars.items()]
+        lines = [
+            '    "%s": "%s",' % (k, str(v).replace("\\", "\\\\").replace('"', '\\"'))
+            for k, v in env_vars.items()
+        ]
         return "\n".join(lines)
 
     def _build_kestra_outputs_code(self, ntype: str) -> str:
@@ -845,7 +852,7 @@ except Exception:
             default = param.kwargs.get("default")
             if callable(default):
                 default = None
-            params[var] = {"name": param.name, "default": default}
+            params[var] = {"default": default}
         return params
 
     def _get_schedule(self) -> Optional[dict]:

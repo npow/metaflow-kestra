@@ -25,7 +25,6 @@ from metaflow.util import get_username
 from .exception import KestraException, NotSupportedException
 from .kestra_compiler import KestraCompiler, flow_name_to_id
 
-
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -33,7 +32,7 @@ from .kestra_compiler import KestraCompiler, flow_name_to_id
 def _validate_workflow(flow, graph):
     """Raise MetaflowException / NotSupportedException for unsupported features."""
     seen = set()
-    for var, param in flow._get_parameters():
+    for _, param in flow._get_parameters():
         norm = param.name.lower()
         if norm in seen:
             raise MetaflowException(
@@ -165,7 +164,7 @@ def kestra(obj, name=None):
     "--workflow-timeout",
     default=None,
     type=int,
-    help="Maximum seconds a single execution may run (not enforced by Kestra itself).",
+    help="Maximum seconds a single execution may run (emitted as flow-level timeout in Kestra YAML).",
 )
 @click.option(
     "--branch",
@@ -311,6 +310,7 @@ def create(
                         "kestra_host": kestra_host,
                         "kestra_user": kestra_user,
                         "kestra_password": kestra_password,
+                        "kestra_token": kestra_token,
                     },
                 },
                 f,
@@ -604,11 +604,11 @@ def _wait_for_execution(client, execution_id: str, obj, poll_interval: int = 5) 
     url = "%s/api/v1/executions/%s" % (host, execution_id)
 
     seen_running = False
-    client.headers.pop("Content-Type", None)  # GET doesn't need Content-Type
 
     while True:
         try:
-            resp = client.get(url)
+            # Override Content-Type per-request; GET needs no body content type.
+            resp = client.get(url, headers={"Content-Type": None})
             if resp.status_code == 200:
                 data = resp.json()
                 state = data.get("state", {}).get("current", "UNKNOWN")

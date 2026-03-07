@@ -69,7 +69,7 @@ class KestraInternalDecorator(StepDecorator):
         output = {"task_ok": is_task_ok}
         node = graph[step_name]
         if node.type == "foreach":
-            output["foreach_cardinality"] = flow._foreach_num_splits
+            output["foreach_cardinality"] = getattr(flow, "_foreach_num_splits", 0)
         if node.type == "split-switch":
             # Record which branch was chosen so the Kestra Switch task can route.
             transition = getattr(flow, "_transition", None)
@@ -80,5 +80,5 @@ class KestraInternalDecorator(StepDecorator):
             try:
                 with open(output_file, "w") as f:
                     json.dump(output, f)
-            except OSError:
+            except (OSError, TypeError):
                 pass

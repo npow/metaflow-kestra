@@ -16,12 +16,16 @@ RUN apt-get update -qq && \
 # Install Metaflow and the Kestra Python client
 RUN pip3 install --no-cache-dir metaflow kestra
 
-# The Kestra JVM worker spawns Python subprocesses with an inherited umask of
-# 077 (root default in this image), which makes all written files mode 600.
-# Inject a sitecustomize.py so every Python process resets the umask to 022
-# (files 644, dirs 755), making Metaflow artifacts readable by the host runner.
-RUN python3 -c "import site; dirs = site.getsitepackages(); \
-    open(dirs[0] + '/sitecustomize.py', 'w').write('import os; os.umask(0o022)\n')"
+# Kestra's JVM inherits umask 077 from the base image, so Python subprocesses
+# create directories as mode 700. Reset to 022 via sitecustomize.py so that
+# directories are world-traversable (755).
+# Note: Metaflow still explicitly chmod 600s individual artifact files, so
+# reading artifacts from a non-root host process requires sudo (see e2e.yml).
+RUN python3 -c "
+import site, pathlib
+sc = pathlib.Path(site.getsitepackages()[0]) / 'sitecustomize.py'
+sc.write_text('import os; os.umask(0o022)\n')
+"
 
 # Copy the metaflow-kestra extension source so it's on the Python path.
 # We use PYTHONPATH rather than pip install to avoid setuptools namespace-package

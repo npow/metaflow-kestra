@@ -1,5 +1,3 @@
-version: "3.8"
-
 # GitHub Actions override for docker-compose.yaml.
 #
 # Usage (in GHA):

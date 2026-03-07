@@ -104,6 +104,28 @@ class WeeklyFlow(FlowSpec):
     ...
 ```
 
+### Nested foreach
+
+Multi-level foreach fan-outs are fully supported — each nesting level maps to a nested Kestra
+`ForEach` task:
+
+```python
+class NestedForeachFlow(FlowSpec):
+    @step
+    def start(self):
+        self.models = ["a", "b"]
+        self.next(self.train, foreach="models")
+
+    @step
+    def train(self):
+        self.seeds = [1, 2, 3]
+        self.next(self.run_seed, foreach="seeds")
+
+    @step
+    def run_seed(self): ...
+    ...
+```
+
 ### Step decorator support
 
 `@retry` is read from your flow and applied to the generated Kestra task automatically:
@@ -115,6 +137,37 @@ class MyFlow(FlowSpec):
     def train(self):
         ...
 ```
+
+### Resource hints
+
+`@resources` on a step forwards CPU, memory, and GPU hints to the underlying compute backend
+via `--with=resources:cpu=N,memory=M,gpu=G`:
+
+```python
+class MyFlow(FlowSpec):
+    @resources(cpu=4, memory=8000, gpu=1)
+    @step
+    def train(self):
+        ...
+```
+
+### Event-driven triggers (`@trigger` / `@trigger_on_finish`)
+
+```python
+# Trigger this flow when a named Kestra event label fires
+@trigger(event="data.ready")
+class MyFlow(FlowSpec):
+    ...
+```
+
+```python
+# Trigger this flow when UpstreamFlow completes in Kestra
+@trigger_on_finish(flow="UpstreamFlow")
+class DownstreamFlow(FlowSpec):
+    ...
+```
+
+Both translate to Kestra `Flow` trigger entries in the generated YAML.
 
 ## Configuration
 
@@ -192,9 +245,13 @@ After each step completes, two extra output variables are posted to the Kestra t
 | `self.next(a, b)` split | `Parallel` task wrapping branch tasks |
 | `@step` with `inputs` (join) | Sequential task after `Parallel` completes |
 | `self.next(step, foreach=items)` | `ForEach` task |
+| Nested `foreach` (multi-level) | Nested `ForEach` tasks |
 | `Parameter` | Kestra `inputs` with type mapping (`INT`, `STRING`, `FLOAT`, `BOOLEAN`) |
 | `@schedule(cron=...)` | Kestra `Schedule` trigger |
 | `@retry` | Kestra task `retry` configuration |
+| `@resources(cpu=N, memory=M, gpu=G)` | `--with=resources:...` forwarded to compute backend |
+| `@trigger(event=...)` | Kestra `Flow` trigger with event-label condition |
+| `@trigger_on_finish(flow=...)` | Kestra `Flow` trigger on upstream flow completion |
 
 ## Development
 

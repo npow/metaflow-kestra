@@ -22,7 +22,7 @@ def compile_flow(flow_file: str, output_file: str, extra_args=None) -> str:
     cmd = [
         sys.executable, flow_file,
         "--no-pylint",
-        "kestra", "create", output_file,
+        "kestra", "compile", output_file,
     ]
     if extra_args:
         cmd.extend(extra_args)

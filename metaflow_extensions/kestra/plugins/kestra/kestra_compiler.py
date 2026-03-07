@@ -554,198 +554,7 @@ Kestra.outputs({"run_id": run_id, "params_task_id": params_task_id})
         foreach_parent: Optional[str] = None,
     ) -> str:
         """Generate the Python script for a single Metaflow step task."""
-        step_name = node.name
-        ntype = node.type
-        flow_name = self._flow_name
         max_retries, _ = self._get_retry_config(node)
-
-        # ----------------------------------------------------------------
-        # Build input_paths expression
-        # ----------------------------------------------------------------
-        input_paths_expr = self._build_input_paths_expr(node)
-
-        # ----------------------------------------------------------------
-        # Build task_id expression
-        # ----------------------------------------------------------------
-        if is_foreach_body:
-            task_id_expr = (
-                '"{{ outputs.metaflow_init.vars.run_id }}" + "-%(step_name)s-" + str(int("{{ taskrun.value }}"))'
-                % {"step_name": step_name}
-            )
-        else:
-            task_id_expr = (
-                '"{{ outputs.metaflow_init.vars.run_id }}" + "-%s"' % step_name
-            )
-
-        # ----------------------------------------------------------------
-        # Build top-level CLI args
-        # ----------------------------------------------------------------
-        top_args = [
-            '"--quiet"',
-            '"--no-pylint"',
-            '"--metadata={{ vars.METADATA_TYPE }}"',
-            '"--datastore={{ vars.DATASTORE_TYPE }}"',
-            '"--datastore-root=" + DATASTORE_ROOT',
-            '"--environment={{ vars.ENVIRONMENT_TYPE }}"',
-            '"--with=kestra_internal"',
-        ]
-        for deco in self.with_decorators:
-            top_args.append('"--with=%s"' % deco)
-        # Note: --tag is a step-level option (after the step subcommand), not top-level.
-        # Tags are added to step_args below.
-        # Add any step-level decorator specs (e.g. @kubernetes forwarded via --with)
-        for deco_spec in self._get_decorator_specs(node):
-            top_args.append('"--with=%s"' % deco_spec)
-        top_args_str = ", ".join(top_args)
-
-        # ----------------------------------------------------------------
-        # Build step CLI args
-        # ----------------------------------------------------------------
-        step_args = [
-            '"step"',
-            '"%s"' % step_name,
-            '"--run-id"', 'run_id',
-            '"--task-id"', 'task_id',
-            '"--retry-count"', '"0"',
-            '"--max-user-code-retries"', '"%d"' % max_retries,
-        ]
-        for tag in self._tags:
-            step_args += ['"--tag"', '"%s"' % tag]
-        if is_foreach_body:
-            step_args += ['"--split-index"', 'str(split_index)']
-        step_args_str = ", ".join(step_args)
-
-        # ----------------------------------------------------------------
-        # Build env overrides (from @environment decorator)
-        # ----------------------------------------------------------------
-        env_deco = [d for d in node.decorators if d.name == "environment"]
-        env_overrides = {}
-        if env_deco:
-            env_overrides.update(env_deco[0].attributes.get("vars", {}))
-        env_lines = []
-        for k, v in env_overrides.items():
-            env_lines.append('    "%(k)s": "%(v)s",' % {"k": k, "v": v})
-        env_overrides_str = "\n".join(env_lines)
-
-        # ----------------------------------------------------------------
-        # Foreach outputs block
-        # ----------------------------------------------------------------
-        foreach_outputs = ""
-        if ntype == "foreach":
-            foreach_outputs = """\
-if out.get("foreach_cardinality", 0) > 0:
-    fc = out["foreach_cardinality"]
-    kestra_out["foreach_count"] = fc
-    kestra_out["foreach_values"] = list(range(fc))
-"""
-
-        # ----------------------------------------------------------------
-        # Split-switch outputs block: propagate branch_taken
-        # ----------------------------------------------------------------
-        switch_outputs = ""
-        if ntype == "split-switch":
-            switch_outputs = """\
-if out.get("branch_taken"):
-    kestra_out["branch_taken"] = out["branch_taken"]
-"""
-
-        # ----------------------------------------------------------------
-        # Foreach body: split_index assignment
-        # ----------------------------------------------------------------
-        split_index_block = ""
-        if is_foreach_body:
-            split_index_block = 'split_index = int("{{ taskrun.value }}")'
-
-        # ----------------------------------------------------------------
-        # Artifact hint block
-        # ----------------------------------------------------------------
-        artifact_hint_block = """\
-try:
-    import metaflow as _mf
-    _old_root = os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")
-    # The metaflow client API expects METAFLOW_DATASTORE_SYSROOT_LOCAL to be the
-    # *parent* of the .metaflow directory (it appends ".metaflow" internally).
-    os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = os.path.dirname(DATASTORE_ROOT)
-    try:
-        _mf.namespace(None)
-        _task = _mf.Task("%(flow_name)s/%%s/%(step_name)s/%%s" %% (run_id, task_id))
-        _names = [a.id for a in _task.artifacts if not a.id.startswith("_")]
-        if _names:
-            kestra_out["metaflow_artifacts"] = ", ".join(_names)
-            kestra_out["metaflow_snippet"] = (
-                "from metaflow import Task\\n"
-                "task = Task(\\'%(flow_name)s/%%s/%(step_name)s/%%s\\' %% (run_id, task_id))\\n"
-                + "\\n".join("# task.data.%%s  # or task[\\'%%s\\'].data" %% (n, n) for n in _names)
-            )
-    except Exception:
-        pass
-    finally:
-        if _old_root is None:
-            os.environ.pop("METAFLOW_DATASTORE_SYSROOT_LOCAL", None)
-        else:
-            os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = _old_root
-except Exception:
-    pass
-""" % {"flow_name": flow_name, "step_name": step_name}
-
-        # ----------------------------------------------------------------
-        # Join / conditional-convergence: build input_paths based on split type
-        # ----------------------------------------------------------------
-        # For join steps and steps that are the convergence point after a
-        # split-switch, we need custom input_paths logic rather than the
-        # default single-parent reference.
-        join_input_block = ""
-        switch_parent = self._find_switch_parent_for_join(node)
-        if ntype == "join" or switch_parent is not None:
-            split_parents = getattr(node, "split_parents", [])
-            if switch_parent is not None:
-                # split-switch join — only one branch ran.
-                # Use Kestra's Pebble null-coalescing (??) inside a single
-                # template expression to pick whichever branch's output is set.
-                branch_steps = list(self.graph[switch_parent].out_funcs)
-                # Build: {{ outputs.b1.vars.input_path ?? outputs.b2.vars.input_path }}
-                coalesce_inner = " ?? ".join(
-                    "outputs.%s.vars.input_path" % b
-                    for b in branch_steps
-                )
-                join_input_block = (
-                    'input_paths = "{{ %s }}"\n' % coalesce_inner
-                )
-            elif split_parents:
-                innermost = split_parents[-1]
-                innermost_node = self.graph[innermost]
-                if innermost_node.type == "foreach":
-                    # foreach join — body tasks have deterministic IDs
-                    body_step = node.in_funcs[0]
-                    join_input_block = """\
-# Foreach join: reconstruct input paths from body task IDs
-foreach_count = int("{{ outputs.%(parent)s.vars.foreach_count }}")
-body_task_ids = [run_id + "-%(body_step)s-" + str(i) for i in range(foreach_count)]
-input_paths = ",".join(
-    run_id + "/%(body_step)s/" + tid for tid in body_task_ids
-)
-""" % {"parent": innermost, "body_step": body_step}
-                else:
-                    # split join — collect input_paths from all branches
-                    branch_input_parts = []
-                    for branch in node.in_funcs:
-                        branch_input_parts.append(
-                            '"{{ outputs.%(b)s.vars.input_path }}"' % {"b": branch}
-                        )
-                    join_input_block = (
-                        "input_paths = \",\".join([%s])\n" % ", ".join(branch_input_parts)
-                    )
-
-        # ----------------------------------------------------------------
-        # Assemble the script
-        # ----------------------------------------------------------------
-        if is_foreach_body:
-            input_paths_line = 'input_paths = "{{ outputs.%(parent)s.vars.input_path }}"' % {"parent": foreach_parent}
-        elif join_input_block:
-            input_paths_line = ""  # handled in join_input_block
-        else:
-            input_paths_line = "input_paths = %s" % input_paths_expr
-
         script = """\
 import json, os, subprocess, sys, tempfile
 from kestra import Kestra
@@ -762,8 +571,7 @@ if DATASTORE_TYPE == "local":
 run_id = "{{ outputs.metaflow_init.vars.run_id }}"
 task_id = %(task_id_expr)s
 %(split_index_block)s
-%(input_paths_line)s
-%(join_input_block)s
+%(input_paths_code)s
 output_fd, output_file = tempfile.mkstemp(suffix=".json")
 os.close(output_fd)
 
@@ -810,26 +618,176 @@ kestra_out = {
     "task_id": task_id,
     "input_path": run_id + "/%(step_name)s/" + task_id,
 }
-%(foreach_outputs)s%(switch_outputs)s
+%(kestra_outputs_code)s
 %(artifact_hint)s
 Kestra.outputs(kestra_out)
 """ % {
-            "task_id_expr": task_id_expr,
-            "split_index_block": split_index_block,
-            "input_paths_line": input_paths_line,
-            "join_input_block": join_input_block,
-            "env_overrides": env_overrides_str,
-            "top_args": top_args_str,
-            "step_args": step_args_str,
-            "step_name": step_name,
-            "foreach_outputs": foreach_outputs,
-            "switch_outputs": switch_outputs,
-            "artifact_hint": artifact_hint_block,
+            "task_id_expr": self._build_task_id_expr(node.name, is_foreach_body),
+            "split_index_block": 'split_index = int("{{ taskrun.value }}")' if is_foreach_body else "",
+            "input_paths_code": self._build_input_paths_code(node, is_foreach_body, foreach_parent),
+            "env_overrides": self._build_env_overrides_str(node),
+            "top_args": self._build_top_args_str(node),
+            "step_args": self._build_step_args_str(node.name, max_retries, is_foreach_body),
+            "step_name": node.name,
+            "kestra_outputs_code": self._build_kestra_outputs_code(node.type),
+            "artifact_hint": self._build_artifact_hint_code(node.name),
         }
-
-        # Clean up extra blank lines
         script = re.sub(r"\n{3,}", "\n\n", script)
         return script.strip()
+
+    def _build_task_id_expr(self, step_name: str, is_foreach_body: bool) -> str:
+        """Python expression string that evaluates to the Metaflow task ID at runtime."""
+        if is_foreach_body:
+            return (
+                '"{{ outputs.metaflow_init.vars.run_id }}" + "-%(step_name)s-" + str(int("{{ taskrun.value }}"))'
+                % {"step_name": step_name}
+            )
+        return '"{{ outputs.metaflow_init.vars.run_id }}" + "-%s"' % step_name
+
+    def _build_input_paths_code(
+        self,
+        node,
+        is_foreach_body: bool,
+        foreach_parent: Optional[str],
+    ) -> str:
+        """Return Python statement(s) that assign ``input_paths`` for this step.
+
+        Handles all cases: foreach body, start step, split-switch convergence,
+        foreach join, split join, and the common single-parent case.
+        """
+        ntype = node.type
+
+        if is_foreach_body:
+            return 'input_paths = "{{ outputs.%s.vars.input_path }}"' % foreach_parent
+
+        if node.name == "start":
+            return (
+                'input_paths = ('
+                '"{{ outputs.metaflow_init.vars.run_id }}"'
+                ' + "/_parameters/" + '
+                '"{{ outputs.metaflow_init.vars.params_task_id }}"'
+                ')'
+            )
+
+        switch_parent = self._find_switch_parent_for_join(node)
+        if switch_parent is not None:
+            # split-switch convergence: only one branch ran; null-coalesce to find it
+            branch_steps = list(self.graph[switch_parent].out_funcs)
+            coalesce = " ?? ".join("outputs.%s.vars.input_path" % b for b in branch_steps)
+            return 'input_paths = "{{ %s }}"' % coalesce
+
+        if ntype == "join":
+            split_parents = list(getattr(node, "split_parents", []))
+            if split_parents:
+                innermost = split_parents[-1]
+                if self.graph[innermost].type == "foreach":
+                    # foreach join: reconstruct paths from deterministic body task IDs
+                    body_step = node.in_funcs[0]
+                    return """\
+# Foreach join: reconstruct input paths from body task IDs
+foreach_count = int("{{ outputs.%(parent)s.vars.foreach_count }}")
+body_task_ids = [run_id + "-%(body_step)s-" + str(i) for i in range(foreach_count)]
+input_paths = ",".join(
+    run_id + "/%(body_step)s/" + tid for tid in body_task_ids
+)""" % {"parent": innermost, "body_step": body_step}
+                else:
+                    # split join: collect input_paths from all branches
+                    parts = ['"{{ outputs.%s.vars.input_path }}"' % b for b in node.in_funcs]
+                    return 'input_paths = ",".join([%s])' % ", ".join(parts)
+
+        # Common case: single parent (or multiple, handled gracefully)
+        in_funcs = list(node.in_funcs)
+        if len(in_funcs) == 1:
+            return 'input_paths = "{{ outputs.%s.vars.input_path }}"' % in_funcs[0]
+        parts = ['"{{ outputs.%s.vars.input_path }}"' % p for p in in_funcs]
+        return 'input_paths = ",".join([%s])' % ", ".join(parts)
+
+    def _build_top_args_str(self, node) -> str:
+        """Comma-separated Python string literals for the top-level CLI args."""
+        args = [
+            '"--quiet"',
+            '"--no-pylint"',
+            '"--metadata={{ vars.METADATA_TYPE }}"',
+            '"--datastore={{ vars.DATASTORE_TYPE }}"',
+            '"--datastore-root=" + DATASTORE_ROOT',
+            '"--environment={{ vars.ENVIRONMENT_TYPE }}"',
+            '"--with=kestra_internal"',
+        ]
+        for deco in self.with_decorators:
+            args.append('"--with=%s"' % deco)
+        # Note: --tag is a step-level option, not top-level; tags go in step_args.
+        for spec in self._get_decorator_specs(node):
+            args.append('"--with=%s"' % spec)
+        return ", ".join(args)
+
+    def _build_step_args_str(self, step_name: str, max_retries: int, is_foreach_body: bool) -> str:
+        """Comma-separated Python string literals for the step sub-command CLI args."""
+        args = [
+            '"step"',
+            '"%s"' % step_name,
+            '"--run-id"', 'run_id',
+            '"--task-id"', 'task_id',
+            '"--retry-count"', '"0"',
+            '"--max-user-code-retries"', '"%d"' % max_retries,
+        ]
+        for tag in self._tags:
+            args += ['"--tag"', '"%s"' % tag]
+        if is_foreach_body:
+            args += ['"--split-index"', 'str(split_index)']
+        return ", ".join(args)
+
+    def _build_env_overrides_str(self, node) -> str:
+        """Indented ``"key": "val",`` lines for @environment vars to inject at runtime."""
+        env_deco = [d for d in node.decorators if d.name == "environment"]
+        if not env_deco:
+            return ""
+        env_vars = env_deco[0].attributes.get("vars", {})
+        lines = ['    "%s": "%s",' % (k, v) for k, v in env_vars.items()]
+        return "\n".join(lines)
+
+    def _build_kestra_outputs_code(self, ntype: str) -> str:
+        """Python code to populate extra Kestra outputs based on step type."""
+        if ntype == "foreach":
+            return """\
+if out.get("foreach_cardinality", 0) > 0:
+    fc = out["foreach_cardinality"]
+    kestra_out["foreach_count"] = fc
+    kestra_out["foreach_values"] = list(range(fc))"""
+        if ntype == "split-switch":
+            return """\
+if out.get("branch_taken"):
+    kestra_out["branch_taken"] = out["branch_taken"]"""
+        return ""
+
+    def _build_artifact_hint_code(self, step_name: str) -> str:
+        """Python code that reads Metaflow artifacts and posts them as Kestra outputs."""
+        return """\
+try:
+    import metaflow as _mf
+    _old_root = os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")
+    # The metaflow client API expects METAFLOW_DATASTORE_SYSROOT_LOCAL to be the
+    # *parent* of the .metaflow directory (it appends ".metaflow" internally).
+    os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = os.path.dirname(DATASTORE_ROOT)
+    try:
+        _mf.namespace(None)
+        _task = _mf.Task("%(flow_name)s/%%s/%(step_name)s/%%s" %% (run_id, task_id))
+        _names = [a.id for a in _task.artifacts if not a.id.startswith("_")]
+        if _names:
+            kestra_out["metaflow_artifacts"] = ", ".join(_names)
+            kestra_out["metaflow_snippet"] = (
+                "from metaflow import Task\\n"
+                "task = Task(\\'%(flow_name)s/%%s/%(step_name)s/%%s\\' %% (run_id, task_id))\\n"
+                + "\\n".join("# task.data.%%s  # or task[\\'%%s\\'].data" %% (n, n) for n in _names)
+            )
+    except Exception:
+        pass
+    finally:
+        if _old_root is None:
+            os.environ.pop("METAFLOW_DATASTORE_SYSROOT_LOCAL", None)
+        else:
+            os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = _old_root
+except Exception:
+    pass""" % {"flow_name": self._flow_name, "step_name": step_name}
 
     # ------------------------------------------------------------------
     # YAML block builder
@@ -864,44 +822,6 @@ Kestra.outputs(kestra_out)
             lines.append("%s    %s" % (pad, sline) if sline.strip() else "")
 
         return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Input path expression builder
-    # ------------------------------------------------------------------
-
-    def _build_input_paths_expr(self, node) -> str:
-        """Return a Python expression string for use in the generated step script.
-
-        For join steps and switch-convergence steps, returns '""' — these cases
-        override input_paths via join_input_block in _step_script instead.
-        """
-        step_name = node.name
-        ntype = node.type
-        in_funcs = list(node.in_funcs)
-        split_parents = list(getattr(node, "split_parents", []))
-
-        if step_name == "start":
-            # Always use the _parameters artifact created by metaflow_init
-            return (
-                '"{{ outputs.metaflow_init.vars.run_id }}"'
-                ' + "/_parameters/" + '
-                '"{{ outputs.metaflow_init.vars.params_task_id }}"'
-            )
-
-        if ntype == "join" and split_parents:
-            # Handled via join_input_block in _step_script
-            return '""'
-
-        if self._find_switch_parent_for_join(node):
-            # Conditional convergence — handled via join_input_block in _step_script
-            return '""'
-
-        if len(in_funcs) == 1:
-            return '"{{ outputs.%s.vars.input_path }}"' % in_funcs[0]
-
-        # Multiple parents (shouldn't happen for non-join after-split, but handle gracefully)
-        parts = ['\"{{ outputs.%s.vars.input_path }}\"' % p for p in in_funcs]
-        return '",".join([%s])' % ", ".join(parts)
 
     # ------------------------------------------------------------------
     # Graph utilities

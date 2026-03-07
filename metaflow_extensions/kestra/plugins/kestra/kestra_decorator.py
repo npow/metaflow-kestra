@@ -77,5 +77,8 @@ class KestraInternalDecorator(StepDecorator):
                 output["branch_taken"] = transition[0][0]
         output_file = os.environ.get("METAFLOW_KESTRA_OUTPUT_FILE")
         if output_file:
-            with open(output_file, "w") as f:
-                json.dump(output, f)
+            try:
+                with open(output_file, "w") as f:
+                    json.dump(output, f)
+            except OSError:
+                pass

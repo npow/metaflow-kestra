@@ -43,17 +43,17 @@ def flow_name_to_id(name: str) -> str:
 
 
 def _iso_duration(seconds: int) -> str:
-    """Convert seconds to ISO 8601 duration string (e.g. PT3600S)."""
-    if seconds < 60:
-        return "PT%dS" % seconds
-    minutes = seconds // 60
-    if minutes < 60:
-        return "PT%dM" % minutes
-    hours = minutes // 60
-    remaining_minutes = minutes % 60
-    if remaining_minutes:
-        return "PT%dH%dM" % (hours, remaining_minutes)
-    return "PT%dH" % hours
+    """Convert seconds to ISO 8601 duration string (e.g. PT1H30M45S)."""
+    minutes, secs = divmod(seconds, 60)
+    hours, mins = divmod(minutes, 60)
+    parts = "PT"
+    if hours:
+        parts += "%dH" % hours
+    if mins:
+        parts += "%dM" % mins
+    if secs or not (hours or mins):
+        parts += "%dS" % secs
+    return parts
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +146,7 @@ class KestraCompiler:
         if schedule:
             sections.append(self._render_triggers(schedule))
         sections.append(self._render_tasks())
-        return "\n".join(sections) + "\n"
+        return "\n\n".join(sections) + "\n"
 
     # ------------------------------------------------------------------
     # Top-level section renderers

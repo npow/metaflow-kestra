@@ -96,7 +96,12 @@ def _validate_foreach(graph):
                 "Nested foreach is not supported with Kestra "
                 "(Kestra's EachSequential/concurrentEach tasks do not support nesting)." % node.name
             )
-        new_inside = inside_foreach or (node.type == "foreach")
+        # A join step exits the foreach body; reset inside_foreach so sequential
+        # foreach steps are not falsely treated as nested.
+        if node.type == "join":
+            new_inside = False
+        else:
+            new_inside = inside_foreach or (node.type == "foreach")
         for next_step in node.out_funcs:
             _traverse(graph[next_step], new_inside)
 
@@ -557,7 +562,7 @@ def _deploy_flow(client, yaml_content: str, kestra_namespace: str, obj):
     except Exception as exc:
         if isinstance(exc, KestraException):
             raise
-        raise KestraException("Failed to connect to Kestra at %s: %s" % (host, exc))
+        raise KestraException("Failed to connect to Kestra at %s: %s" % (host, exc)) from exc
 
 
 def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict = None) -> str:
@@ -589,7 +594,7 @@ def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict
     except Exception as exc:
         if isinstance(exc, KestraException):
             raise
-        raise KestraException("Failed to trigger execution: %s" % exc)
+        raise KestraException("Failed to trigger execution: %s" % exc) from exc
 
 
 def _wait_for_execution(client, execution_id: str, obj, poll_interval: int = 5) -> str:

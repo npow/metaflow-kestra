@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from typing import TYPE_CHECKING, ClassVar, Optional
 
+import metaflow
+from metaflow.exception import MetaflowNotFound
 from metaflow.runner.deployer import DeployedFlow, TriggeredRun
 from metaflow.runner.utils import get_lower_level_group, handle_timeout, temporary_fifo
 
 if TYPE_CHECKING:
-    import metaflow
     import metaflow.runner.deployer_impl
 
 
@@ -35,10 +38,6 @@ class KestraTriggeredRun(TriggeredRun):
     @property
     def run(self):
         """Retrieve the Run object, applying deployer env vars so local metadata works."""
-        import os
-        import metaflow
-        from metaflow.exception import MetaflowNotFound
-
         env_vars = getattr(self.deployer, "env_vars", {}) or {}
         meta_type = env_vars.get("METAFLOW_DEFAULT_METADATA")
         sysroot = env_vars.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")
@@ -88,7 +87,6 @@ class KestraDeployedFlow(DeployedFlow):
     @property
     def id(self) -> str:
         """Deployment identifier encoding all info needed for ``from_deployment``."""
-        import json
         additional_info = getattr(self.deployer, "additional_info", {}) or {}
         return json.dumps({
             "name": self.name,
@@ -152,7 +150,6 @@ class KestraDeployedFlow(DeployedFlow):
     @classmethod
     def from_deployment(cls, identifier: str, metadata: Optional[str] = None) -> "KestraDeployedFlow":
         """Recover a KestraDeployedFlow from a deployment identifier."""
-        import json
         from .kestra_deployer import KestraDeployer
 
         info = json.loads(identifier)

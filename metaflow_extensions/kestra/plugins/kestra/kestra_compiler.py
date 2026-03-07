@@ -346,61 +346,47 @@ class KestraCompiler:
 
     def _render_step_task(self, node, indent: int) -> str:
         script = self._step_script(node)
-        timeout = self._get_timeout(node)
-        retries, retry_delay = self._get_retry_config(node)
+        return self._task_block(
+            task_id=node.name,
+            task_type="io.kestra.plugin.scripts.python.Script",
+            script=script,
+            indent=indent,
+            extras=self._build_task_extras(node),
+        )
 
+    def _build_task_extras(self, node) -> dict:
+        """Return the extras dict (timeout, retry) for a task block."""
         extras = {}
+        timeout = self._get_timeout(node)
         if timeout:
             extras["timeout"] = _iso_duration(timeout)
+        retries, retry_delay = self._get_retry_config(node)
         if retries > 0:
             extras["retry"] = {
                 "type": "constant",
                 "interval": _iso_duration(retry_delay),
                 "maxAttempt": retries,
             }
-
-        return self._task_block(
-            task_id=node.name,
-            task_type="io.kestra.plugin.scripts.python.Script",
-            script=script,
-            indent=indent,
-            extras=extras,
-        )
+        return extras
 
     def _render_foreach_wrapper(self, parent_node, body_node, indent: int) -> str:
         """Emit a ForEach task wrapping the body step."""
         pad = " " * indent
-        wrapper_id = "foreach_%s" % parent_node.name
         body_script = self._step_script(body_node, is_foreach_body=True, foreach_parent=parent_node.name)
-        timeout = self._get_timeout(body_node)
-        retries, retry_delay = self._get_retry_config(body_node)
-
         lines = [
-            "%s- id: %s" % (pad, wrapper_id),
+            "%s- id: foreach_%s" % (pad, parent_node.name),
             "%s  type: io.kestra.plugin.core.flow.ForEach" % pad,
             "%s  values: \"{{ outputs.%s.vars.foreach_values }}\"" % (pad, parent_node.name),
             "%s  concurrencyLimit: %d" % (pad, self.max_workers),
             "%s  tasks:" % pad,
         ]
-
-        body_extras = {}
-        if timeout:
-            body_extras["timeout"] = _iso_duration(timeout)
-        if retries > 0:
-            body_extras["retry"] = {
-                "type": "constant",
-                "interval": _iso_duration(retry_delay),
-                "maxAttempt": retries,
-            }
-
-        body_yaml = self._task_block(
+        lines.append(self._task_block(
             task_id=body_node.name,
             task_type="io.kestra.plugin.scripts.python.Script",
             script=body_script,
             indent=indent + 4,
-            extras=body_extras,
-        )
-        lines.append(body_yaml)
+            extras=self._build_task_extras(body_node),
+        ))
         return "\n".join(lines)
 
     def _render_parallel_wrapper(self, split_node, visited: set, indent: int) -> str:
@@ -451,15 +437,14 @@ class KestraCompiler:
     def _find_switch_join_step(self, switch_step_name: str) -> Optional[str]:
         """Find the convergence step that follows a split-switch step.
 
-        For split-switch (conditional branch) nodes, Metaflow guarantees that all
-        branches converge at a single downstream step — we just follow the first
-        branch's out_func to find it.
+        Metaflow guarantees all conditional branches converge at a single
+        downstream step. We find it by following the first branch one step.
         """
         switch_node = self.graph[switch_step_name]
-        for branch_step in switch_node.out_funcs:
-            branch_node = self.graph[branch_step]
-            for next_step in branch_node.out_funcs:
-                return next_step
+        if switch_node.out_funcs:
+            first_branch = self.graph[switch_node.out_funcs[0]]
+            if first_branch.out_funcs:
+                return first_branch.out_funcs[0]
         return None
 
     def _visit_branch(

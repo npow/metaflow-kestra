@@ -10,8 +10,10 @@ Commands
   run      Compile, deploy, trigger an execution and stream its logs.
 """
 
+import hashlib
 import json
 import os
+import re as _re
 import sys
 import time
 import warnings
@@ -82,7 +84,12 @@ def _validate_workflow(flow, graph):
 
 def _validate_foreach(graph):
     """Verify no nested foreach (foreach inside foreach body)."""
+    visited = set()
+
     def _traverse(node, inside_foreach):
+        if node.name in visited:
+            return
+        visited.add(node.name)
         if node.type == "foreach" and inside_foreach:
             raise NotSupportedException(
                 "Step *%s* is a foreach step inside another foreach. "
@@ -90,9 +97,8 @@ def _validate_foreach(graph):
                 "(Kestra's EachSequential/concurrentEach tasks do not support nesting)." % node.name
             )
         new_inside = inside_foreach or (node.type == "foreach")
-        if node.type in ("start", "linear", "join", "foreach", "split", "split-switch"):
-            for next_step in node.out_funcs:
-                _traverse(graph[next_step], new_inside)
+        for next_step in node.out_funcs:
+            _traverse(graph[next_step], new_inside)
 
     _traverse(graph["start"], False)
 
@@ -120,7 +126,7 @@ def kestra(obj, name=None):
 
 
 # ---------------------------------------------------------------------------
-# create
+# compile
 # ---------------------------------------------------------------------------
 
 @kestra.command(name="compile", help="Compile this flow to a Kestra YAML file.")
@@ -287,6 +293,7 @@ def create(
     _deploy_flow(client, yaml_content, kestra_namespace, obj)
 
     if deployer_attribute_file:
+        flow_id = compiler.flow_id
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
@@ -446,8 +453,7 @@ def trigger(
     obj.echo("Execution started: *%s*" % execution_url)
 
     if deployer_attribute_file:
-        import hashlib as _hashlib
-        _run_id = "kestra-" + _hashlib.md5(execution_id.encode()).hexdigest()[:16]
+        _run_id = "kestra-" + hashlib.md5(execution_id.encode()).hexdigest()[:16]
         pathspec = "%s/%s" % (obj.flow.name, _run_id)
         with open(deployer_attribute_file, "w") as f:
             json.dump(
@@ -521,7 +527,6 @@ def _make_client(host: str, user, password, token):
 
 def _deploy_flow(client, yaml_content: str, kestra_namespace: str, obj):
     """Create or update a Kestra flow via the REST API."""
-    import re as _re
     host = client._kestra_host
     url = "%s/api/v1/flows" % host
     try:

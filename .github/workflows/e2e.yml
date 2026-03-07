@@ -22,9 +22,8 @@ jobs:
       METAFLOW_DEFAULT_METADATA: local
       METAFLOW_DEFAULT_DATASTORE: local
       METAFLOW_DEFAULT_ENVIRONMENT: local
-      # The sysroot must point to the parent of .metaflow, which equals $HOME
-      # on the GHA runner. Set explicitly so it survives the sudo boundary.
-      METAFLOW_DATASTORE_SYSROOT_LOCAL: ${{ env.HOME }}
+      # METAFLOW_DATASTORE_SYSROOT_LOCAL is set in the test step where $HOME
+      # is available as a shell variable (job-level env can't reference $HOME).
 
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +61,7 @@ jobs:
           # Kestra runs as root and Metaflow explicitly chmod 600s artifact files.
           # The GHA runner (non-root) cannot read them, so we run pytest as root.
           # sudo -E preserves the job-level env vars set above.
-          sudo -E env "PATH=$PATH" "HOME=$HOME" \
+          sudo -E env "PATH=$PATH" "HOME=$HOME" "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" \
             pytest tests/test_e2e.py -m integration -v --timeout=300
 
       - name: Dump .metaflow tree on failure

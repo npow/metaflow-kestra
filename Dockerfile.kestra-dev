@@ -21,11 +21,9 @@ RUN pip3 install --no-cache-dir metaflow kestra
 # directories are world-traversable (755).
 # Note: Metaflow still explicitly chmod 600s individual artifact files, so
 # reading artifacts from a non-root host process requires sudo (see e2e.yml).
-RUN python3 -c "
-import site, pathlib
-sc = pathlib.Path(site.getsitepackages()[0]) / 'sitecustomize.py'
-sc.write_text('import os; os.umask(0o022)\n')
-"
+RUN python3 -c "import site, pathlib; \
+    p = pathlib.Path(site.getsitepackages()[0]) / 'sitecustomize.py'; \
+    p.write_text('import os; os.umask(0o022)\n')"
 
 # Copy the metaflow-kestra extension source so it's on the Python path.
 # We use PYTHONPATH rather than pip install to avoid setuptools namespace-package

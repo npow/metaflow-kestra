@@ -34,8 +34,12 @@ class KestraDeployer(DeployerImpl):
     TYPE: ClassVar[Optional[str]] = "kestra"
 
     def __init__(self, deployer_kwargs: Dict[str, str], **kwargs) -> None:
-        self.deployer_kwargs = deployer_kwargs
+        self._deployer_kwargs = deployer_kwargs
         super().__init__(**kwargs)
+
+    @property
+    def deployer_kwargs(self) -> Dict[str, str]:
+        return self._deployer_kwargs
 
     @staticmethod
     def deployed_flow_type() -> Type["KestraDeployedFlow"]:

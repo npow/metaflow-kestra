@@ -56,7 +56,19 @@ jobs:
           METAFLOW_DEFAULT_ENVIRONMENT: local
           METAFLOW_DATASTORE_SYSROOT_LOCAL: ${{ env.HOME }}
         run: |
-          pytest tests/test_e2e.py -m integration -v --timeout=300
+          # Kestra runs as root and Metaflow explicitly chmod 600s artifact files,
+          # so the runner user can't read them. Run pytest as root (GHA has
+          # passwordless sudo) while preserving HOME so metaflow reads from the
+          # correct .metaflow path.
+          sudo -E env "PATH=$PATH" "HOME=$HOME" \
+            METAFLOW_DEFAULT_METADATA=local \
+            METAFLOW_DEFAULT_DATASTORE=local \
+            METAFLOW_DEFAULT_ENVIRONMENT=local \
+            METAFLOW_DATASTORE_SYSROOT_LOCAL="$HOME" \
+            KESTRA_HOST="$KESTRA_HOST" \
+            KESTRA_USER="$KESTRA_USER" \
+            KESTRA_PASSWORD="$KESTRA_PASSWORD" \
+            pytest tests/test_e2e.py -m integration -v --timeout=300
 
       - name: Debug .metaflow dir on failure
         if: failure()

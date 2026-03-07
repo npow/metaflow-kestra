@@ -16,7 +16,6 @@ import os
 import re as _re
 import sys
 import time
-import warnings
 
 from metaflow._vendor import click
 from metaflow.exception import MetaflowException
@@ -51,15 +50,8 @@ def _validate_workflow(flow, graph):
             raise NotSupportedException(
                 "Step *%s* uses @parallel which is not supported with Kestra." % node.name
             )
-        for deco in node.decorators:
-            if deco.name == "resources":
-                warnings.warn(
-                    "Step *%s* uses @resources. Resource requirements are passed through "
-                    "as --with flags but are not enforced by Kestra scheduling — "
-                    "configure resources on your Kestra worker directly." % node.name,
-                    UserWarning,
-                    stacklevel=2,
-                )
+        # @resources is supported: CPU/memory/GPU hints are forwarded as --with flags
+        # at runtime so compute backends (e.g. @kubernetes, @sandbox) receive them.
         if any(d.name == "batch" for d in node.decorators):
             raise NotSupportedException(
                 "Step *%s* uses @batch which is not supported with Kestra. "
@@ -70,41 +62,13 @@ def _validate_workflow(flow, graph):
                 "Step *%s* uses @slurm which is not supported with Kestra." % node.name
             )
 
-    for bad in ("trigger", "trigger_on_finish", "exit_hook"):
+    # @exit_hook is the only flow-level decorator that remains unsupported
+    for bad in ("exit_hook",):
         decos = getattr(flow, "_flow_decorators", {}).get(bad)
         if decos:
             raise NotSupportedException(
                 "@%s is not supported with Kestra." % bad
             )
-
-    # Validate foreach: no nested foreach
-    _validate_foreach(graph)
-
-
-def _validate_foreach(graph):
-    """Verify no nested foreach (foreach inside foreach body)."""
-    visited = set()
-
-    def _traverse(node, inside_foreach):
-        if node.name in visited:
-            return
-        visited.add(node.name)
-        if node.type == "foreach" and inside_foreach:
-            raise NotSupportedException(
-                "Step *%s* is a foreach step inside another foreach. "
-                "Nested foreach is not supported with Kestra "
-                "(Kestra's EachSequential/concurrentEach tasks do not support nesting)." % node.name
-            )
-        # A join step exits the foreach body; reset inside_foreach so sequential
-        # foreach steps are not falsely treated as nested.
-        if node.type == "join":
-            new_inside = False
-        else:
-            new_inside = inside_foreach or (node.type == "foreach")
-        for next_step in node.out_funcs:
-            _traverse(graph[next_step], new_inside)
-
-    _traverse(graph["start"], False)
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ Supported Metaflow graph patterns:
   linear       - sequential steps
   split/join   - io.kestra.plugin.core.flow.Parallel wraps the branches
   foreach      - io.kestra.plugin.core.flow.ForEach with one body task
+  nested foreach - ForEach tasks nested inside each other (arbitrary depth)
   split-switch - io.kestra.plugin.core.flow.Switch routes to the chosen branch;
                  the convergence step uses Pebble null-coalescing (??) to pick
                  whichever branch's output is populated
@@ -142,9 +143,9 @@ class KestraCompiler:
         if params:
             sections.append(self._render_inputs(params))
         sections.append(self._render_plugin_defaults())
-        schedule = self._get_schedule()
-        if schedule:
-            sections.append(self._render_triggers(schedule))
+        triggers_yaml = self._render_triggers()
+        if triggers_yaml:
+            sections.append(triggers_yaml)
         sections.append(self._render_tasks(params))
         return "\n\n".join(sections) + "\n"
 
@@ -234,16 +235,54 @@ class KestraCompiler:
         ]
         return "\n".join(lines)
 
-    def _render_triggers(self, schedule: dict) -> str:
-        lines = ["triggers:"]
-        cron = schedule.get("cron")
-        if cron:
-            lines.append("  - id: schedule")
-            lines.append("    type: io.kestra.plugin.core.trigger.Schedule")
-            lines.append("    cron: \"%s\"" % cron)
-            if schedule.get("timezone"):
-                lines.append("    timezone: %s" % schedule["timezone"])
-        return "\n".join(lines)
+    def _render_triggers(self) -> str:
+        """Render the triggers section combining @schedule, @trigger, and @trigger_on_finish."""
+        trigger_blocks = []
+
+        # @schedule decorator → Kestra Schedule trigger
+        schedule = self._get_schedule()
+        if schedule:
+            cron = schedule.get("cron")
+            if cron:
+                block = ["  - id: schedule", "    type: io.kestra.plugin.core.trigger.Schedule"]
+                block.append("    cron: \"%s\"" % cron)
+                if schedule.get("timezone"):
+                    block.append("    timezone: %s" % schedule["timezone"])
+                trigger_blocks.append("\n".join(block))
+
+        # @trigger(event="foo") → Kestra Flow trigger listening for a named event
+        for idx, event_name in enumerate(self._get_triggers()):
+            tid = "on_event_%d" % idx if idx > 0 else "on_event"
+            block = [
+                "  - id: %s" % tid,
+                "    type: io.kestra.plugin.core.trigger.Flow",
+                "    conditions:",
+                "      - type: io.kestra.plugin.core.condition.ExecutionLabelsCondition",
+                "        labels:",
+                "          metaflow.event: \"%s\"" % event_name.replace('"', '\\"'),
+            ]
+            trigger_blocks.append("\n".join(block))
+
+        # @trigger_on_finish(flow="UpstreamFlow") → trigger when the upstream Kestra flow completes
+        for idx, upstream_flow in enumerate(self._get_trigger_on_finishes()):
+            upstream_id = flow_name_to_id(upstream_flow)
+            tid = "on_finish_%d" % idx if idx > 0 else "on_finish"
+            block = [
+                "  - id: %s" % tid,
+                "    type: io.kestra.plugin.core.trigger.Flow",
+                "    conditions:",
+                "      - type: io.kestra.plugin.core.condition.ExecutionFlowCondition",
+                "        namespace: %s" % self.kestra_namespace,
+                "        flowId: %s" % upstream_id,
+                "      - type: io.kestra.plugin.core.condition.ExecutionStatusCondition",
+                "        in:",
+                "          - SUCCESS",
+            ]
+            trigger_blocks.append("\n".join(block))
+
+        if not trigger_blocks:
+            return ""
+        return "triggers:\n" + "\n".join(trigger_blocks)
 
     def _render_tasks(self, params: dict) -> str:
         lines = ["tasks:"]
@@ -287,17 +326,18 @@ class KestraCompiler:
         elif ntype == "foreach":
             # Emit the foreach parent step itself
             out.append(self._render_step_task(node, indent=indent))
-            # The foreach body is the first (and only) out_func
-            body_step = node.out_funcs[0]
-            body_node = self.graph[body_step]
-            # Emit a ForEach wrapper around the body step
-            out.append(
-                self._render_foreach_wrapper(node, body_node, indent=indent)
-            )
-            # After foreach body, continue with the join step
-            join_step = body_node.out_funcs[0]
-            visited.add(body_step)  # body is inside ForEach, don't emit top-level
-            self._visit_node(join_step, out, visited, indent=indent)
+            # Build the full nested foreach chain (may be depth > 1)
+            chain = self._build_foreach_chain(node.name)
+            # Mark all body/join steps inside the chain as visited so they
+            # are not emitted again at the top level.
+            for _foreach_name, body_name, join_name in chain:
+                visited.add(body_name)
+                visited.add(join_name)
+            # Emit the outermost ForEach wrapper (which nests inner ones recursively)
+            out.append(self._render_foreach_chain(chain, indent=indent))
+            # Continue with the step after the outermost join
+            outermost_join = chain[0][2]
+            self._visit_node(outermost_join, out, visited, indent=indent)
 
         elif ntype == "split":
             # First run the split step itself (it may compute data before branching)
@@ -372,24 +412,87 @@ class KestraCompiler:
             }
         return extras
 
-    def _render_foreach_wrapper(self, parent_node, body_node, indent: int) -> str:
-        """Emit a ForEach task wrapping the body step."""
+    def _build_foreach_chain(self, foreach_step_name: str) -> list:
+        """Return a list of (foreach_name, body_name, join_name) tuples for nested foreach.
+
+        The list is ordered outermost-first.  For a simple (non-nested) foreach
+        the list has exactly one entry.  For two levels of nesting it has two
+        entries, and so on.
+        """
+        chain = []
+        current = foreach_step_name
+        while True:
+            node = self.graph[current]
+            body_name = node.out_funcs[0]
+            body_node = self.graph[body_name]
+            # Find the join step for this foreach level
+            join_name = self._find_foreach_join(current)
+            chain.append((current, body_name, join_name))
+            # If the body step is itself a foreach, recurse into the next level
+            if body_node.type == "foreach":
+                current = body_name
+            else:
+                break
+        return chain
+
+    def _find_foreach_join(self, foreach_step_name: str) -> str:
+        """Return the join step name that corresponds to the given foreach step."""
+        for node in self.graph:
+            if node.type == "join":
+                parents = list(getattr(node, "split_parents", []))
+                if parents and parents[-1] == foreach_step_name:
+                    return node.name
+        # Fallback: use the body's out_func (simple case)
+        body_name = self.graph[foreach_step_name].out_funcs[0]
+        return self.graph[body_name].out_funcs[0]
+
+    def _render_foreach_chain(self, chain: list, indent: int) -> str:
+        """Recursively render nested ForEach wrappers for the given chain.
+
+        chain: list of (foreach_name, body_name, join_name) tuples, outermost first.
+        Returns the YAML string for the outermost ForEach task (inner ones are nested).
+        """
+        foreach_name, body_name, _join_name = chain[0]
+        parent_node = self.graph[foreach_name]
+        body_node = self.graph[body_name]
         pad = " " * indent
-        body_script = self._step_script(body_node, is_foreach_body=True, foreach_parent=parent_node.name)
+
         lines = [
-            "%s- id: foreach_%s" % (pad, parent_node.name),
+            "%s- id: foreach_%s" % (pad, foreach_name),
             "%s  type: io.kestra.plugin.core.flow.ForEach" % pad,
-            "%s  values: \"{{ outputs.%s.vars.foreach_values }}\"" % (pad, parent_node.name),
+            "%s  values: \"{{ outputs.%s.vars.foreach_values }}\"" % (pad, foreach_name),
             "%s  concurrencyLimit: %d" % (pad, self.max_workers),
             "%s  tasks:" % pad,
         ]
-        lines.append(self._task_block(
-            task_id=body_node.name,
-            task_type="io.kestra.plugin.scripts.python.Script",
-            script=body_script,
-            indent=indent + 4,
-            extras=self._build_task_extras(body_node),
-        ))
+
+        if len(chain) > 1:
+            # The body step is itself a foreach: emit it as a step task first, then
+            # nest its own ForEach wrapper inside this one.
+            inner_body_script = self._step_script(
+                body_node, is_foreach_body=True, foreach_parent=foreach_name
+            )
+            lines.append(self._task_block(
+                task_id=body_node.name,
+                task_type="io.kestra.plugin.scripts.python.Script",
+                script=inner_body_script,
+                indent=indent + 4,
+                extras=self._build_task_extras(body_node),
+            ))
+            # Recursively render the inner foreach chain
+            lines.append(self._render_foreach_chain(chain[1:], indent=indent + 4))
+        else:
+            # Leaf level: render the actual body step
+            body_script = self._step_script(
+                body_node, is_foreach_body=True, foreach_parent=foreach_name
+            )
+            lines.append(self._task_block(
+                task_id=body_node.name,
+                task_type="io.kestra.plugin.scripts.python.Script",
+                script=body_script,
+                indent=indent + 4,
+                extras=self._build_task_extras(body_node),
+            ))
+
         return "\n".join(lines)
 
     def _render_parallel_wrapper(self, split_node, visited: set, indent: int) -> str:
@@ -706,6 +809,11 @@ input_paths = ",".join(
         # Note: --tag is a step-level option, not top-level; tags go in step_args.
         for spec in self._get_decorator_specs(node):
             args.append('"--with=%s"' % spec.replace("\\", "\\\\").replace('"', '\\"'))
+        # Forward @resources as a --with flag so compute backends (kubernetes, batch, etc.)
+        # receive CPU/memory/GPU hints at runtime.
+        resources_spec = self._get_resources_spec(node)
+        if resources_spec:
+            args.append('"--with=%s"' % resources_spec.replace("\\", "\\\\").replace('"', '\\"'))
         return ", ".join(args)
 
     def _build_step_args_str(self, step_name: str, max_retries: int, is_foreach_body: bool) -> str:
@@ -927,9 +1035,13 @@ except Exception:
 
     def _get_decorator_specs(self, node) -> list:
         """Return --with-compatible spec strings for user-defined step decorators
-        that should be forwarded as subcommand flags."""
+        that should be forwarded as subcommand flags.
+
+        Note: @resources is excluded here because it is handled separately in
+        _get_resources_spec to build an explicit resources: spec string.
+        """
         _skip = {
-            "kestra_internal", "retry", "timeout", "environment",
+            "kestra_internal", "retry", "timeout", "environment", "resources",
             "project", "trigger", "trigger_on_finish", "schedule", "card",
         }
         specs = []
@@ -943,6 +1055,77 @@ except Exception:
             except Exception:
                 pass
         return specs
+
+    def _get_resources_spec(self, node) -> Optional[str]:
+        """Return a 'resources:cpu=N,memory=M,gpu=G' spec string for @resources, or None.
+
+        The spec is passed as a --with flag at runtime so that Metaflow compute
+        backends (e.g. @kubernetes, @sandbox) receive the resource hints.
+        """
+        for deco in node.decorators:
+            if deco.name == "resources":
+                parts = []
+                for attr in ("cpu", "memory", "gpu"):
+                    val = deco.attributes.get(attr)
+                    if val is not None:
+                        parts.append("%s=%s" % (attr, val))
+                if parts:
+                    return "resources:%s" % ",".join(parts)
+        return None
+
+    def _get_triggers(self) -> list:
+        """Return a list of event names from @trigger(event=...) decorators."""
+        import warnings
+        try:
+            flow_decos = getattr(self.flow, "_flow_decorators", {})
+            trigger_list = flow_decos.get("trigger", [])
+            if not trigger_list:
+                return []
+            raw_triggers = getattr(trigger_list[0], "triggers", None) or []
+            result = []
+            for t in raw_triggers:
+                if not isinstance(t, dict):
+                    continue
+                name = t.get("name")
+                if not name or not isinstance(name, str):
+                    warnings.warn(
+                        "@trigger entry has a non-string or deploy-time event name %r — "
+                        "skipping this trigger." % (name,),
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                result.append(name)
+            return result
+        except Exception:
+            return []
+
+    def _get_trigger_on_finishes(self) -> list:
+        """Return a list of upstream flow names from @trigger_on_finish(flow=...) decorators."""
+        import warnings
+        try:
+            flow_decos = getattr(self.flow, "_flow_decorators", {})
+            tof_list = flow_decos.get("trigger_on_finish", [])
+            if not tof_list:
+                return []
+            raw_triggers = getattr(tof_list[0], "triggers", None) or []
+            result = []
+            for t in raw_triggers:
+                if not isinstance(t, dict):
+                    continue
+                flow_name = t.get("flow") or t.get("fq_name")
+                if not flow_name or not isinstance(flow_name, str):
+                    warnings.warn(
+                        "@trigger_on_finish entry has a non-string or missing flow name %r — "
+                        "skipping this trigger." % (flow_name,),
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    continue
+                result.append(flow_name)
+            return result
+        except Exception:
+            return []
 
     @staticmethod
     def _infer_kestra_type(default) -> str:

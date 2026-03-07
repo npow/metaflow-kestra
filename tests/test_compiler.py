@@ -379,3 +379,102 @@ class TestKestraNamespace:
             flow_file, out, extra_args=["--kestra-namespace=company.team"]
         )
         assert "namespace: company.team" in yaml_str
+
+
+# ---------------------------------------------------------------------------
+# Nested foreach
+# ---------------------------------------------------------------------------
+
+class TestNestedForeachFlow:
+    def test_compiles_without_error(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert yaml_str
+
+    def test_outer_foreach_present(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert "foreach_start" in yaml_str
+
+    def test_inner_foreach_nested(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # The inner foreach step (outer) should be nested inside the outer ForEach
+        assert "foreach_outer" in yaml_str
+
+    def test_yaml_valid(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        assert data is not None
+        assert data["id"] == "nestedforeachflow"
+
+    def test_inner_step_not_at_top_level(self, tmp_path):
+        """inner step must be nested inside ForEach, not emitted as a top-level task."""
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        top_ids = [t["id"] for t in data["tasks"]]
+        # 'inner' is inside a nested ForEach, not a top-level task
+        assert "inner" not in top_ids
+
+
+# ---------------------------------------------------------------------------
+# @trigger / @trigger_on_finish
+# ---------------------------------------------------------------------------
+
+class TestTriggerDecorator:
+    def test_trigger_event_emitted(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "trigger_flow.py")
+        out = str(tmp_path / "trigger.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        assert "triggers:" in yaml_str
+        assert "io.kestra.plugin.core.trigger.Flow" in yaml_str
+        assert "my_event" in yaml_str
+
+    def test_yaml_valid(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "trigger_flow.py")
+        out = str(tmp_path / "trigger.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        assert data is not None
+        assert "triggers" in data
+
+
+# ---------------------------------------------------------------------------
+# @resources forwarding
+# ---------------------------------------------------------------------------
+
+class TestResourcesFlow:
+    def test_resources_forwarded_as_with_flag(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "resources_flow.py")
+        out = str(tmp_path / "resources.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # @resources(cpu=4, memory=8192, gpu=1) should become a --with flag
+        assert "resources:cpu=4" in yaml_str
+        assert "memory=8192" in yaml_str
+        assert "gpu=1" in yaml_str
+
+    def test_no_advisory_warning(self, tmp_path):
+        """The old 'advisory' UserWarning should no longer be emitted."""
+        import subprocess
+        flow_file = os.path.join(FLOWS_DIR, "resources_flow.py")
+        out = str(tmp_path / "out.yaml")
+        result = subprocess.run(
+            [sys.executable, flow_file, "kestra", "compile", out],
+            capture_output=True,
+            text=True,
+        )
+        assert "resource requirements are" not in result.stderr.lower()
+
+    def test_yaml_valid(self, tmp_path):
+        flow_file = os.path.join(FLOWS_DIR, "resources_flow.py")
+        out = str(tmp_path / "resources.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        assert data is not None

@@ -22,13 +22,10 @@ Generated top-level task order:
 import json
 import os
 import re
-import sys
 from datetime import datetime
 from typing import List, Optional
 
-from metaflow.exception import MetaflowException
-
-from .exception import KestraException, NotSupportedException
+from .exception import NotSupportedException
 
 try:
     from metaflow.plugins.timeout_decorator import get_run_time_limit_for_task
@@ -186,21 +183,27 @@ class KestraCompiler:
 
     def _render_variables(self) -> str:
         lines = ["variables:"]
-        lines.append("  FLOW_FILE: %s" % self.flow_file)
-        lines.append("  FLOW_NAME: %s" % self._flow_name)
-        lines.append("  METADATA_TYPE: %s" % self._metadata_type)
-        lines.append("  DATASTORE_TYPE: %s" % self._datastore_type)
-        lines.append("  DATASTORE_ROOT: %s" % (self._datastore_root or "~/.metaflow"))
-        lines.append("  ENVIRONMENT_TYPE: %s" % self._environment_type)
-        lines.append("  EVENT_LOGGER_TYPE: %s" % self._event_logger_type)
-        lines.append("  MONITOR_TYPE: %s" % self._monitor_type)
-        lines.append("  KESTRA_NAMESPACE: %s" % self.kestra_namespace)
-        # Collect any METAFLOW_SERVICE_* vars from the current environment.
-        # Quote values to handle special YAML characters (colons, hashes, etc.).
+        # All values are double-quoted to handle paths with spaces or YAML special chars.
+        fixed = [
+            ("FLOW_FILE",        self.flow_file),
+            ("FLOW_NAME",        self._flow_name),
+            ("METADATA_TYPE",    self._metadata_type),
+            ("DATASTORE_TYPE",   self._datastore_type),
+            ("DATASTORE_ROOT",   self._datastore_root or "~/.metaflow"),
+            ("ENVIRONMENT_TYPE", self._environment_type),
+            ("EVENT_LOGGER_TYPE",self._event_logger_type),
+            ("MONITOR_TYPE",     self._monitor_type),
+            ("KESTRA_NAMESPACE", self.kestra_namespace),
+        ]
+        for key, val in fixed:
+            safe = str(val).replace("\\", "\\\\").replace('"', '\\"')
+            lines.append('  %s: "%s"' % (key, safe))
+        # Forward any METAFLOW_SERVICE_* / METAFLOW_DEFAULT_* env vars so steps
+        # inherit the same backend configuration as the compile-time environment.
         for key, val in os.environ.items():
             if key.startswith("METAFLOW_SERVICE") or key.startswith("METAFLOW_DEFAULT"):
-                safe_val = val.replace("\\", "\\\\").replace('"', '\\"')
-                lines.append('  %s: "%s"' % (key, safe_val))
+                safe = val.replace("\\", "\\\\").replace('"', '\\"')
+                lines.append('  %s: "%s"' % (key, safe))
         return "\n".join(lines)
 
     def _render_inputs(self, params: dict) -> str:
@@ -298,7 +301,7 @@ class KestraCompiler:
             out.append(self._render_step_task(node, indent=indent))
             # Then emit the Parallel wrapper for the branches
             out.append(
-                self._render_parallel_wrapper(node, out_parent=out, visited=visited, indent=indent)
+                self._render_parallel_wrapper(node, visited=visited, indent=indent)
             )
             # Find the join node for this split and continue from there
             join_step = self._find_join_step(step_name)
@@ -333,7 +336,6 @@ class KestraCompiler:
     # ------------------------------------------------------------------
 
     def _render_init_task(self, indent: int) -> str:
-        pad = " " * indent
         script = self._init_script()
         return self._task_block(
             task_id=self.INIT_TASK_ID,
@@ -381,7 +383,6 @@ class KestraCompiler:
             "%s  tasks:" % pad,
         ]
 
-        body_lines = []
         body_extras = {}
         if timeout:
             body_extras["timeout"] = _iso_duration(timeout)
@@ -402,7 +403,7 @@ class KestraCompiler:
         lines.append(body_yaml)
         return "\n".join(lines)
 
-    def _render_parallel_wrapper(self, split_node, out_parent: list, visited: set, indent: int) -> str:
+    def _render_parallel_wrapper(self, split_node, visited: set, indent: int) -> str:
         """Emit a Parallel task containing all branch tasks for a split node."""
         pad = " " * indent
         wrapper_id = "parallel_%s" % split_node.name
@@ -450,9 +451,9 @@ class KestraCompiler:
     def _find_switch_join_step(self, switch_step_name: str) -> Optional[str]:
         """Find the convergence step that follows a split-switch step.
 
-        For split-switch nodes, all branches eventually converge at a single
-        downstream step (which may be a join or a linear step with multiple
-        in_funcs). We find it by following branch steps to their destination.
+        For split-switch (conditional branch) nodes, Metaflow guarantees that all
+        branches converge at a single downstream step — we just follow the first
+        branch's out_func to find it.
         """
         switch_node = self.graph[switch_step_name]
         for branch_step in switch_node.out_funcs:
@@ -648,8 +649,6 @@ if out.get("branch_taken"):
     kestra_out["branch_taken"] = out["branch_taken"]
 """
 
-        init_input_block = ""
-
         # ----------------------------------------------------------------
         # Foreach body: split_index assignment
         # ----------------------------------------------------------------
@@ -764,7 +763,7 @@ run_id = "{{ outputs.metaflow_init.vars.run_id }}"
 task_id = %(task_id_expr)s
 %(split_index_block)s
 %(input_paths_line)s
-%(join_input_block)s%(init_input_block)s
+%(join_input_block)s
 output_fd, output_file = tempfile.mkstemp(suffix=".json")
 os.close(output_fd)
 
@@ -819,7 +818,6 @@ Kestra.outputs(kestra_out)
             "split_index_block": split_index_block,
             "input_paths_line": input_paths_line,
             "join_input_block": join_input_block,
-            "init_input_block": init_input_block,
             "env_overrides": env_overrides_str,
             "top_args": top_args_str,
             "step_args": step_args_str,
@@ -872,10 +870,10 @@ Kestra.outputs(kestra_out)
     # ------------------------------------------------------------------
 
     def _build_input_paths_expr(self, node) -> str:
-        """Return a Python expression (as a string) for the input_paths value.
+        """Return a Python expression string for use in the generated step script.
 
-        The returned expression is used verbatim in the generated step script.
-        Returns empty string for cases handled separately (joins, foreach body).
+        For join steps and switch-convergence steps, returns '""' — these cases
+        override input_paths via join_input_block in _step_script instead.
         """
         step_name = node.name
         ntype = node.type
@@ -997,16 +995,14 @@ Kestra.outputs(kestra_out)
         # Only emit a Kestra task timeout when the step has an explicit @timeout
         # decorator. The Metaflow default runtime limit (120h) should not be
         # forwarded as a Kestra timeout because it would appear on every task.
-        for deco in node.decorators:
-            if deco.name == "timeout":
-                try:
-                    if get_run_time_limit_for_task is not None:
-                        limit = get_run_time_limit_for_task(node.decorators)
-                        if limit:
-                            return limit
-                except Exception:
-                    pass
-        return None
+        if get_run_time_limit_for_task is None:
+            return None
+        if not any(d.name == "timeout" for d in node.decorators):
+            return None
+        try:
+            return get_run_time_limit_for_task(node.decorators) or None
+        except Exception:
+            return None
 
     def _get_retry_config(self, node) -> tuple:
         """Return (max_retries, delay_seconds) from @retry, or (0, 120) if absent."""

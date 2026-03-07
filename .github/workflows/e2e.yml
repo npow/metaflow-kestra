@@ -1,0 +1,66 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Build Kestra Docker image
+        run: docker build -t kestra-metaflow:latest -f Dockerfile.kestra-dev .
+
+      - name: Start Kestra
+        run: |
+          docker compose -f docker-compose.yaml -f docker-compose.gha.yml up -d
+
+      - name: Wait for Kestra to be healthy
+        run: |
+          echo "Waiting for Kestra to become healthy (up to 5 minutes)..."
+          CONTAINER_ID=$(docker compose ps -q kestra)
+          timeout 300 bash -c "
+            until [ \"\$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_ID 2>/dev/null)\" = 'healthy' ]; do
+              STATUS=\$(docker inspect --format='{{.State.Health.Status}}' $CONTAINER_ID 2>/dev/null)
+              echo \"  health status: \$STATUS\"
+              sleep 10
+            done
+          " || {
+            echo "Kestra did not become healthy in time. Container logs:"
+            docker compose logs kestra
+            exit 1
+          }
+          echo "Kestra is healthy."
+
+      - name: Run E2E tests
+        env:
+          KESTRA_HOST: http://localhost:8090
+          KESTRA_USER: admin@kestra.io
+          KESTRA_PASSWORD: Kestra1234!
+          METAFLOW_DEFAULT_METADATA: local
+          METAFLOW_DEFAULT_DATASTORE: local
+          METAFLOW_DEFAULT_ENVIRONMENT: local
+        run: |
+          pytest tests/test_e2e.py -m integration -v --timeout=300
+
+      - name: Show Kestra logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.yaml -f docker-compose.gha.yml logs kestra
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yaml -f docker-compose.gha.yml down -v

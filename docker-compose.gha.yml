@@ -1,0 +1,21 @@
+version: "3.8"
+
+# GitHub Actions override for docker-compose.yaml.
+#
+# Usage (in GHA):
+#   docker compose -f docker-compose.yaml -f docker-compose.gha.yml up -d
+#
+# Replaces the ${HOME}/code volume mount with ${GITHUB_WORKSPACE} so the
+# Kestra worker can find flow files at the same absolute path the test
+# runner used when compiling the Kestra YAML.
+
+services:
+  kestra:
+    volumes:
+      - kestra-data:/app/storage
+      - /tmp/kestra:/tmp
+      - ${HOME}/.metaflow:${HOME}/.metaflow
+      - ${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}
+
+volumes:
+  kestra-data: {}

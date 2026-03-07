@@ -54,8 +54,18 @@ jobs:
           METAFLOW_DEFAULT_METADATA: local
           METAFLOW_DEFAULT_DATASTORE: local
           METAFLOW_DEFAULT_ENVIRONMENT: local
+          METAFLOW_DATASTORE_SYSROOT_LOCAL: ${{ env.HOME }}
         run: |
           pytest tests/test_e2e.py -m integration -v --timeout=300
+
+      - name: Debug .metaflow dir on failure
+        if: failure()
+        run: |
+          echo "=== $HOME/.metaflow contents ==="
+          ls -laR "$HOME/.metaflow" 2>/dev/null || echo "(empty or missing)"
+          echo "=== Docker .metaflow ==="
+          docker compose -f docker-compose.yaml -f docker-compose.gha.yml exec -T kestra \
+            ls -laR "$HOME/.metaflow" 2>/dev/null || echo "(could not exec)"
 
       - name: Show Kestra logs on failure
         if: failure()

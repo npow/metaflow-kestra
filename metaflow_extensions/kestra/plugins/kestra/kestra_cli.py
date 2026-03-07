@@ -438,6 +438,94 @@ def trigger(
 
 
 # ---------------------------------------------------------------------------
+# resume
+# ---------------------------------------------------------------------------
+
+@kestra.command(help="Resume a failed run, skipping steps that already completed.")
+@click.option("--clone-run-id", "clone_run_id", required=True,
+              help="Metaflow run ID of the failed run to resume (e.g. kestra-<hex>).")
+@click.option("--kestra-host", default="http://localhost:8080", show_default=True, envvar="KESTRA_HOST")
+@click.option("--kestra-user", default=None, envvar="KESTRA_USER")
+@click.option("--kestra-password", default=None, envvar="KESTRA_PASSWORD")
+@click.option("--kestra-token", default=None, envvar="KESTRA_API_TOKEN")
+@click.option("--kestra-namespace", default="metaflow", show_default=True,
+              help="Kestra namespace the flow is deployed in.")
+@click.option("--flow-id", default=None, hidden=True,
+              help="Kestra flow ID (overrides computed default).")
+@click.option("--run-param", "run_params", multiple=True, default=None,
+              help="Flow parameter as key=value (repeatable).")
+@click.option("--wait/--no-wait", default=True, show_default=True,
+              help="Wait for the resumed execution to complete.")
+@click.option("--deployer-attribute-file", default=None, hidden=True,
+              help="Write resumed-run info JSON here (used by Metaflow Deployer API).")
+@click.pass_obj
+def resume(
+    obj,
+    clone_run_id,
+    kestra_host,
+    kestra_user,
+    kestra_password,
+    kestra_token,
+    kestra_namespace,
+    flow_id,
+    run_params,
+    wait,
+    deployer_attribute_file,
+):
+    if flow_id is None:
+        flow_id = flow_name_to_id(obj.kestra_flow_name)
+
+    # Parse run params, then inject ORIGIN_RUN_ID for resume
+    params = {"ORIGIN_RUN_ID": clone_run_id}
+    for kv in run_params:
+        k, _, v = kv.partition("=")
+        params[k.strip()] = v.strip()
+
+    client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
+
+    obj.echo(
+        "Resuming *%s* from run *%s* in namespace *%s*..."
+        % (flow_id, clone_run_id, kestra_namespace),
+        bold=True,
+    )
+    execution_id = _trigger_execution(client, kestra_namespace, flow_id, inputs=params)
+    execution_url = "%s/ui/executions/%s/%s/%s" % (
+        kestra_host, kestra_namespace, flow_id, execution_id
+    )
+    obj.echo("Execution started: *%s*" % execution_url)
+
+    if deployer_attribute_file:
+        _run_id = "kestra-" + hashlib.md5(execution_id.encode()).hexdigest()[:16]
+        pathspec = "%s/%s" % (obj.flow.name, _run_id)
+        with open(deployer_attribute_file, "w") as f:
+            json.dump(
+                {
+                    "pathspec": pathspec,
+                    "name": obj.kestra_flow_name,
+                    "execution_id": execution_id,
+                    "execution_url": execution_url,
+                    "metadata": "{}",
+                    "origin_run_id": clone_run_id,
+                },
+                f,
+            )
+
+    if wait:
+        obj.echo("Waiting for resumed execution to complete...")
+        final_state = _wait_for_execution(client, execution_id, obj)
+        if final_state == "SUCCESS":
+            obj.echo("Execution *%s* completed successfully." % execution_id, bold=True)
+        else:
+            raise KestraException(
+                "Execution %s finished with state: %s\nURL: %s"
+                % (execution_id, final_state, execution_url)
+            )
+    else:
+        obj.echo("Execution ID: %s" % execution_id)
+        obj.echo("Track it at: %s" % execution_url)
+
+
+# ---------------------------------------------------------------------------
 # Kestra API helpers
 # ---------------------------------------------------------------------------
 

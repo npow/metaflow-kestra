@@ -218,6 +218,14 @@ class KestraCompiler:
             lines.append("    type: %s" % ptype)
             if default is not None:
                 lines.append("    defaults: %s" % json.dumps(default))
+        # Always add the hidden resume input so any deployed flow supports
+        # `kestra resume --clone-run-id <run_id>` without redeployment.
+        lines += [
+            "  - id: ORIGIN_RUN_ID",
+            "    type: STRING",
+            '    defaults: ""',
+            "    description: 'Leave empty for a normal run. Set to a previous Metaflow run ID to resume (skip already-completed steps).'",
+        ]
         return "\n".join(lines)
 
     @staticmethod
@@ -623,6 +631,9 @@ cmd = [
     "--task-id", params_task_id,
 %(param_args)s
 ]
+origin_run_id = "{{ inputs.ORIGIN_RUN_ID }}"
+if origin_run_id:
+    cmd += ["--clone-run-id", origin_run_id]
 result = subprocess.run(cmd, capture_output=True, text=True)
 if result.stdout:
     print(result.stdout[-2000:])
@@ -680,6 +691,9 @@ cmd = [
 ]
 if input_paths:
     cmd += ["--input-paths", input_paths]
+_origin_run_id = "{{ inputs.ORIGIN_RUN_ID }}"
+if _origin_run_id:
+    cmd += ["--clone-run-id", _origin_run_id]
 result = subprocess.run(cmd, env=env, capture_output=True, text=True)
 if result.stdout:
     print(result.stdout[-3000:])

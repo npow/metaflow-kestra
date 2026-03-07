@@ -45,6 +45,10 @@ python my_flow.py kestra create --kestra-host http://localhost:8080
 
 # Compile, deploy, and trigger in one step
 python my_flow.py kestra run --kestra-host http://localhost:8080 --wait
+
+# Resume a failed run (skips already-completed steps)
+python my_flow.py kestra resume --clone-run-id kestra-<hex> \
+    --kestra-host http://localhost:8080
 ```
 
 ### All graph shapes are supported
@@ -252,6 +256,7 @@ After each step completes, two extra output variables are posted to the Kestra t
 | `@resources(cpu=N, memory=M, gpu=G)` | `--with=resources:...` forwarded to compute backend |
 | `@trigger(event=...)` | Kestra `Flow` trigger with event-label condition |
 | `@trigger_on_finish(flow=...)` | Kestra `Flow` trigger on upstream flow completion |
+| `kestra resume --clone-run-id <id>` | Resume failed run; skips steps that already succeeded |
 
 ## Development
 

@@ -1,0 +1,79 @@
+name: UX Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"  # nightly — catches upstream metaflow regressions
+  workflow_dispatch:
+
+jobs:
+  ux-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      COMPOSE_FILE: docker-compose.yaml:docker-compose.gha.yml
+      KESTRA_HOST: http://localhost:8090
+      KESTRA_USER: admin@kestra.io
+      KESTRA_PASSWORD: Kestra1234!
+      METAFLOW_DEFAULT_METADATA: local
+      METAFLOW_DEFAULT_DATASTORE: local
+      METAFLOW_DEFAULT_ENVIRONMENT: local
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pin Metaflow local datastore root
+        run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" >> "$GITHUB_ENV"
+
+      - name: Build Kestra Docker image
+        run: docker build -t kestra-metaflow:latest -f Dockerfile.kestra-dev .
+
+      - name: Start Kestra
+        run: docker compose up -d
+
+      - name: Wait for Kestra to be healthy
+        run: |
+          CONTAINER_ID=$(docker compose ps -q kestra)
+          timeout 300 bash -c '
+            while true; do
+              STATUS=$(docker inspect --format="{{.State.Health.Status}}" '"$CONTAINER_ID"' 2>/dev/null)
+              [ "$STATUS" = "healthy" ] && break
+              echo "  health: $STATUS"
+              sleep 10
+            done
+          ' || { docker compose logs kestra; exit 1; }
+          echo "Kestra is healthy."
+
+      - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+        with:
+          extra-install: "."
+          # Kestra worker runs as root and creates root-owned artifact files.
+          use-sudo: "true"
+          codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          ux-test-config: |
+            backends:
+              - name: kestra
+                scheduler_type: kestra
+                cluster: null
+                decospec: null
+                deploy_args:
+                  kestra_host: http://localhost:8090
+                  kestra_user: admin@kestra.io
+                  kestra_password: Kestra1234!
+                enabled: true
+
+      - name: Dump Kestra logs on failure
+        if: failure()
+        run: docker compose logs kestra
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

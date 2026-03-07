@@ -1,6 +1,7 @@
 # metaflow-kestra
 
 [![CI](https://github.com/npow/metaflow-kestra/actions/workflows/ci.yml/badge.svg)](https://github.com/npow/metaflow-kestra/actions/workflows/ci.yml)
+[![E2E](https://github.com/npow/metaflow-kestra/actions/workflows/e2e.yml/badge.svg)](https://github.com/npow/metaflow-kestra/actions/workflows/e2e.yml)
 [![PyPI](https://img.shields.io/pypi/v/metaflow-kestra)](https://pypi.org/project/metaflow-kestra/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -37,10 +38,10 @@ python my_flow.py kestra run --kestra-host http://localhost:8080 --wait
 
 ```bash
 # Compile the flow to a Kestra YAML
-python my_flow.py kestra create flow.yaml
+python my_flow.py kestra compile flow.yaml
 
 # Deploy to a running Kestra server
-python my_flow.py kestra deploy flow.yaml --kestra-host http://localhost:8080
+python my_flow.py kestra create --kestra-host http://localhost:8080
 
 # Compile, deploy, and trigger in one step
 python my_flow.py kestra run --kestra-host http://localhost:8080 --wait
@@ -126,7 +127,7 @@ compile time, so every step subprocess uses the same backend. To use a specific 
 python my_flow.py \
   --metadata=service \
   --datastore=s3 \
-  kestra create flow.yaml
+  kestra compile flow.yaml
 ```
 
 Or via environment variables:
@@ -134,7 +135,7 @@ Or via environment variables:
 ```bash
 export METAFLOW_DEFAULT_METADATA=service
 export METAFLOW_DEFAULT_DATASTORE=s3
-python my_flow.py kestra create flow.yaml
+python my_flow.py kestra compile flow.yaml
 ```
 
 ### Authentication

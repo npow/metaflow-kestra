@@ -30,11 +30,6 @@ from conftest import FLOWS_DIR, compile_flow
 
 pytestmark = pytest.mark.integration
 
-METAFLOW_HOME = os.environ.get(
-    "METAFLOW_DATASTORE_SYSROOT_LOCAL",
-    os.path.join(os.path.expanduser("~"), ".metaflow"),
-)
-
 
 # ---------------------------------------------------------------------------
 # Helpers

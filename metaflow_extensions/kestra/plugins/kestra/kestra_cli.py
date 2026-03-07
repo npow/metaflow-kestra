@@ -491,7 +491,7 @@ def trigger(
     client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
 
     obj.echo("Triggering execution of *%s* in namespace *%s*..." % (flow_id, kestra_namespace), bold=True)
-    execution_id = _trigger_execution(client, kestra_namespace, flow_id)
+    execution_id = _trigger_execution(client, kestra_namespace, flow_id, inputs=params or None)
     execution_url = "%s/ui/executions/%s/%s/%s" % (
         kestra_host, kestra_namespace, flow_id, execution_id
     )
@@ -573,14 +573,26 @@ def _deploy_flow(client, yaml_content: str, kestra_namespace: str, obj):
         raise KestraException("Failed to connect to Kestra at %s: %s" % (host, exc))
 
 
-def _trigger_execution(client, kestra_namespace: str, flow_id: str) -> str:
-    """Trigger a flow execution and return the execution ID."""
+def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict = None) -> str:
+    """Trigger a flow execution and return the execution ID.
+
+    Parameters
+    ----------
+    inputs : dict, optional
+        Flow input values (Metaflow Parameters). Sent as multipart/form-data
+        because Kestra returns 404 when Content-Type is application/x-yaml.
+    """
     host = client._kestra_host
     url = "%s/api/v1/executions/%s/%s" % (host, kestra_namespace, flow_id)
     try:
-        # Clear Content-Type so requests sends a plain POST with no body.
-        # Kestra returns 404 if Content-Type is set (e.g. application/x-yaml from session).
-        resp = client.post(url, headers={"Content-Type": None})
+        if inputs:
+            # Kestra requires multipart/form-data for inputs; url-encoded returns 404.
+            files = {k: (None, str(v)) for k, v in inputs.items()}
+            resp = client.post(url, files=files)
+        else:
+            # Clear Content-Type so requests sends a plain POST with no body.
+            # Kestra returns 404 if Content-Type is set (e.g. application/x-yaml from session).
+            resp = client.post(url, headers={"Content-Type": None})
         if resp.status_code not in (200, 201):
             raise KestraException(
                 "Failed to trigger execution (HTTP %d): %s"

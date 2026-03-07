@@ -55,8 +55,7 @@ class KestraTriggeredRun(TriggeredRun):
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = sysroot
             return metaflow.Run(self.pathspec, _namespace_check=False)
         except MetaflowNotFound:
-            return None
-        except Exception:
+            # Run not yet written — execution still in progress
             return None
         finally:
             if old_meta is None:

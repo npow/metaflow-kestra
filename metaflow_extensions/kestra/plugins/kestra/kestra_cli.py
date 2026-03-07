@@ -21,7 +21,7 @@ from metaflow.exception import MetaflowException
 from metaflow.util import get_username
 
 from .exception import KestraException, NotSupportedException
-from .kestra_compiler import KestraCompiler
+from .kestra_compiler import KestraCompiler, flow_name_to_id
 
 
 # ---------------------------------------------------------------------------
@@ -187,27 +187,10 @@ def compile(
 
     obj.echo("Compiling *%s* to Kestra YAML..." % obj.kestra_flow_name, bold=True)
 
-    compiler = KestraCompiler(
-        name=obj.kestra_flow_name,
-        graph=obj.graph,
-        flow=obj.flow,
-        flow_file=os.path.abspath(sys.argv[0]),
-        metadata=obj.metadata,
-        flow_datastore=obj.flow_datastore,
-        environment=obj.environment,
-        event_logger=obj.event_logger,
-        monitor=obj.monitor,
-        tags=list(tags),
-        namespace=namespace,
-        username=get_username(),
-        max_workers=max_workers,
-        with_decorators=list(with_decorators),
-        workflow_timeout=workflow_timeout,
-        kestra_namespace=kestra_namespace,
-        branch=branch,
-        production=production,
+    compiler = _build_compiler(
+        obj, kestra_namespace, max_workers, with_decorators, workflow_timeout,
+        branch, production, namespace=namespace, tags=tags,
     )
-
     yaml_content = compiler.compile()
 
     with open(file, "w") as f:
@@ -294,34 +277,16 @@ def create(
 
     obj.echo("Compiling *%s* to Kestra YAML..." % obj.kestra_flow_name, bold=True)
 
-    compiler = KestraCompiler(
-        name=obj.kestra_flow_name,
-        graph=obj.graph,
-        flow=obj.flow,
-        flow_file=os.path.abspath(sys.argv[0]),
-        metadata=obj.metadata,
-        flow_datastore=obj.flow_datastore,
-        environment=obj.environment,
-        event_logger=obj.event_logger,
-        monitor=obj.monitor,
-        tags=list(tags),
-        namespace=namespace,
-        username=get_username(),
-        max_workers=max_workers,
-        with_decorators=list(with_decorators),
-        workflow_timeout=workflow_timeout,
-        kestra_namespace=kestra_namespace,
-        branch=branch,
-        production=production,
+    compiler = _build_compiler(
+        obj, kestra_namespace, max_workers, with_decorators, workflow_timeout,
+        branch, production, namespace=namespace, tags=tags,
     )
-
     yaml_content = compiler.compile()
 
     client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
     _deploy_flow(client, yaml_content, kestra_namespace, obj)
 
     if deployer_attribute_file:
-        flow_id = compiler._flow_name.lower().replace(".", "-").replace("_", "-")
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
@@ -384,29 +349,12 @@ def run(
 
     obj.echo("Compiling *%s*..." % obj.kestra_flow_name, bold=True)
 
-    compiler = KestraCompiler(
-        name=obj.kestra_flow_name,
-        graph=obj.graph,
-        flow=obj.flow,
-        flow_file=os.path.abspath(sys.argv[0]),
-        metadata=obj.metadata,
-        flow_datastore=obj.flow_datastore,
-        environment=obj.environment,
-        event_logger=obj.event_logger,
-        monitor=obj.monitor,
-        tags=list(tags),
-        namespace=namespace,
-        username=get_username(),
-        max_workers=max_workers,
-        with_decorators=list(with_decorators),
-        workflow_timeout=workflow_timeout,
-        kestra_namespace=kestra_namespace,
-        branch=branch,
-        production=production,
+    compiler = _build_compiler(
+        obj, kestra_namespace, max_workers, with_decorators, workflow_timeout,
+        branch, production, namespace=namespace, tags=tags,
     )
-
     yaml_content = compiler.compile()
-    flow_id = compiler._flow_name.lower().replace(".", "-").replace("_", "-")
+    flow_id = compiler.flow_id
 
     client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
 
@@ -480,7 +428,7 @@ def trigger(
     run_params,
 ):
     if flow_id is None:
-        flow_id = obj.kestra_flow_name.lower().replace(".", "-").replace("_", "-")
+        flow_id = flow_name_to_id(obj.kestra_flow_name)
 
     # Parse run params into a dict (key=value pairs)
     params = {}
@@ -517,6 +465,40 @@ def trigger(
 # ---------------------------------------------------------------------------
 # Kestra API helpers
 # ---------------------------------------------------------------------------
+
+def _build_compiler(
+    obj,
+    kestra_namespace,
+    max_workers,
+    with_decorators,
+    workflow_timeout,
+    branch,
+    production,
+    namespace=None,
+    tags=(),
+) -> KestraCompiler:
+    """Construct a KestraCompiler from a Metaflow CLI obj and shared options."""
+    return KestraCompiler(
+        name=obj.kestra_flow_name,
+        graph=obj.graph,
+        flow=obj.flow,
+        flow_file=os.path.abspath(sys.argv[0]),
+        metadata=obj.metadata,
+        flow_datastore=obj.flow_datastore,
+        environment=obj.environment,
+        event_logger=obj.event_logger,
+        monitor=obj.monitor,
+        tags=list(tags),
+        namespace=namespace,
+        username=get_username(),
+        max_workers=max_workers,
+        with_decorators=list(with_decorators),
+        workflow_timeout=workflow_timeout,
+        kestra_namespace=kestra_namespace,
+        branch=branch,
+        production=production,
+    )
+
 
 def _make_client(host: str, user, password, token):
     """Return a requests.Session configured for the given Kestra instance."""

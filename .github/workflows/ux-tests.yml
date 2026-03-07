@@ -53,10 +53,9 @@ jobs:
           echo "Kestra is healthy."
 
       - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
-          metaflow-ref: npow/corral-devstack
         with:
+          metaflow-ref: npow/corral-devstack
           extra-install: "."
-          # Kestra worker runs as root and creates root-owned artifact files.
           use-sudo: "true"
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           ux-test-config: |

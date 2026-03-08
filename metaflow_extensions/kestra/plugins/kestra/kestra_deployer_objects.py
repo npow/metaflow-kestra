@@ -109,7 +109,10 @@ class KestraDeployedFlow(DeployedFlow):
         KestraTriggeredRun
         """
         # Convert kwargs to "key=value" strings for --run-param.
-        run_params = tuple("%s=%s" % (k, v) for k, v in kwargs.items())
+        # Must be a list (not tuple) so it passes the Optional[Union[List[str], Tuple[str]]]
+        # type check in the Metaflow click API — Tuple[str] means exactly one element,
+        # but List[str] accepts any number of elements.
+        run_params = list("%s=%s" % (k, v) for k, v in kwargs.items())
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
             trigger_kwargs = {"deployer_attribute_file": attribute_file_path}

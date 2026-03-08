@@ -140,8 +140,10 @@ class KestraCompiler:
         sections.append(self._render_header())
         sections.append(self._render_variables())
         params = self._get_parameters()
-        if params:
-            sections.append(self._render_inputs(params))
+        # Always emit the inputs section so that {{ inputs.ORIGIN_RUN_ID }}
+        # (used in every task script for resume support) resolves in Kestra 1.3+,
+        # which throws IllegalVariableEvaluationException for undefined inputs.
+        sections.append(self._render_inputs(params))
         sections.append(self._render_plugin_defaults())
         triggers_yaml = self._render_triggers()
         if triggers_yaml:

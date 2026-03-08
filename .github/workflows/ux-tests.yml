@@ -35,7 +35,6 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           use-sudo: "false"
-          conda: "false"  # Kestra container needs conda support added to Dockerfile.kestra-dev
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           pytest-args: "-n 4 -v --tb=short --timeout=180 -k 'runner' --cov-fail-under=0"
           ux-test-config: |
@@ -126,6 +125,7 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           use-sudo: "true"
+          conda: "false"  # steps run in Kestra container which has no conda
           # Use the matrix test name as a suffix so parallel jobs don't conflict
           # on the coverage artifact name (all share the same github.job value).
           coverage-artifact-suffix: "${{ matrix.test }}"

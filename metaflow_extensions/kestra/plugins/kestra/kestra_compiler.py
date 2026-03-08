@@ -230,6 +230,10 @@ class KestraCompiler:
 
     @staticmethod
     def _render_plugin_defaults() -> str:
+        # Keep pluginDefaults as a best-effort fallback for Kestra versions that honour it.
+        # Each task also sets taskRunner/warningOnStdErr/beforeCommands explicitly via
+        # _TASK_RUNNER_YAML so that the behaviour is correct regardless of whether
+        # pluginDefaults is applied by the running Kestra version.
         lines = [
             "pluginDefaults:",
             "  - type: io.kestra.plugin.scripts.python.Script",
@@ -238,10 +242,21 @@ class KestraCompiler:
             "      taskRunner:",
             "        type: io.kestra.plugin.core.runner.Process",
             "      beforeCommands:",
-            "        - pip show kestra >/dev/null 2>&1 || pip install kestra --quiet 2>&1 | tail -3",
-            "        - pip show metaflow >/dev/null 2>&1 || pip install metaflow --quiet 2>&1 | tail -3",
+            "        - python3 -m pip show kestra >/dev/null 2>&1 || python3 -m pip install kestra --quiet 2>&1 | tail -3",
+            "        - python3 -m pip show metaflow >/dev/null 2>&1 || python3 -m pip install metaflow --quiet 2>&1 | tail -3",
         ]
         return "\n".join(lines)
+
+    # YAML fragment emitted directly into every Script task so the Process runner
+    # and beforeCommands are applied even when pluginDefaults is not honoured.
+    _TASK_RUNNER_YAML = (
+        "warningOnStdErr: false\n"
+        "taskRunner:\n"
+        "  type: io.kestra.plugin.core.runner.Process\n"
+        "beforeCommands:\n"
+        "  - python3 -m pip show kestra >/dev/null 2>&1 || python3 -m pip install kestra --quiet 2>&1 | tail -3\n"
+        "  - python3 -m pip show metaflow >/dev/null 2>&1 || python3 -m pip install metaflow --quiet 2>&1 | tail -3"
+    )
 
     def _render_triggers(self) -> str:
         """Render the triggers section combining @schedule, @trigger, and @trigger_on_finish."""
@@ -921,6 +936,13 @@ except Exception:
             "%s- id: %s" % (pad, task_id),
             "%s  type: %s" % (pad, task_type),
         ]
+
+        # Emit taskRunner/warningOnStdErr/beforeCommands directly on every Script task.
+        # This ensures the Process runner is used even when pluginDefaults is not honoured
+        # by the running Kestra version.
+        for yaml_line in self._TASK_RUNNER_YAML.splitlines():
+            lines.append("%s  %s" % (pad, yaml_line))
+
         if extras:
             for k, v in extras.items():
                 if isinstance(v, dict):

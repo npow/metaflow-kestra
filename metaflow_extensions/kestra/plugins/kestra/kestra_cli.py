@@ -631,8 +631,12 @@ def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict
     try:
         if inputs:
             # Kestra requires multipart/form-data for inputs; url-encoded returns 404.
+            # Must clear the session Content-Type (application/x-yaml) so requests can
+            # set the correct multipart/form-data boundary from the files= parameter.
+            # requests only sets Content-Type from files= when it's not already present
+            # in headers, so we must explicitly remove the session-level value.
             files = {k: (None, str(v)) for k, v in inputs.items()}
-            resp = client.post(url, files=files)
+            resp = client.post(url, files=files, headers={"Content-Type": None})
         else:
             # Clear Content-Type so requests sends a plain POST with no body.
             # Kestra returns 404 if Content-Type is set (e.g. application/x-yaml from session).

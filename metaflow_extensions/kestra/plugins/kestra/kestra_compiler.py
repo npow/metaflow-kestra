@@ -130,6 +130,36 @@ class KestraCompiler:
         self._event_logger_type = event_logger.TYPE
         self._monitor_type = monitor.TYPE
 
+        # Capture compile-time config values so config_expr / @project decorators
+        # evaluate correctly at task runtime (same approach as Airflow/SFN/Prefect).
+        self._flow_config_value = self._extract_flow_config_value(flow)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_flow_config_value(flow) -> Optional[str]:
+        """Serialize compile-time config values to a JSON string.
+
+        Returns the JSON string suitable for METAFLOW_FLOW_CONFIG_VALUE, or None
+        if the flow has no configs or the FlowStateItems API is unavailable.
+        """
+        try:
+            from metaflow.flowspec import FlowStateItems
+
+            flow_configs = flow._flow_state[FlowStateItems.CONFIGS]
+            config_env = {
+                name: value
+                for name, (value, _is_plain) in flow_configs.items()
+                if value is not None
+            }
+            if config_env:
+                return json.dumps(config_env)
+        except Exception:
+            pass
+        return None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -207,6 +237,14 @@ class KestraCompiler:
         for key, val in fixed:
             safe = str(val).replace("\\", "\\\\").replace('"', '\\"')
             lines.append('  %s: "%s"' % (key, safe))
+        # Inject compile-time config values so config_expr / @project work at task
+        # runtime.  The JSON is base64-encoded so that curly braces and double quotes
+        # in the value do not clash with YAML quoting or Pebble template syntax.
+        # Scripts decode it with base64.b64decode before setting the env var.
+        if self._flow_config_value is not None:
+            import base64 as _b64
+            b64 = _b64.b64encode(self._flow_config_value.encode()).decode()
+            lines.append('  METAFLOW_FLOW_CONFIG_VALUE_B64: "%s"' % b64)
         # Forward any METAFLOW_SERVICE_* / METAFLOW_DEFAULT_* env vars so steps
         # inherit the same backend configuration as the compile-time environment.
         for key, val in os.environ.items():
@@ -627,6 +665,26 @@ class KestraCompiler:
         else:
             params_block = "params = {}"
 
+        # Build the init subprocess environment: always pin METAFLOW_DATASTORE_SYSROOT_LOCAL
+        # so that the init subprocess writes _parameters artifacts to the same location
+        # as the deployer reads from, even if the Kestra worker container overrides it.
+        init_env_lines = [
+            "_init_env = dict(os.environ)",
+            "_init_env[\"METAFLOW_DATASTORE_SYSROOT_LOCAL\"] = os.path.dirname(_datastore_root)",
+        ]
+        # Also propagate METAFLOW_FLOW_CONFIG_VALUE so that config_expr decorators
+        # (e.g. @project(name=config_expr(...))) resolve correctly when the flow
+        # module is loaded by `metaflow init`.
+        if self._flow_config_value is not None:
+            init_env_lines = (
+                ["import base64 as _b64"] +
+                init_env_lines +
+                ["_init_env[\"METAFLOW_FLOW_CONFIG_VALUE\"] = "
+                 "_b64.b64decode(\"{{ vars.METAFLOW_FLOW_CONFIG_VALUE_B64 }}\").decode()"]
+            )
+        init_env_block = "\n".join(init_env_lines)
+        init_env_kwarg = ", env=_init_env"
+
         return """\
 import hashlib, os, subprocess, sys
 from kestra import Kestra
@@ -659,7 +717,8 @@ cmd = [
 origin_run_id = "{{ inputs.ORIGIN_RUN_ID }}"
 if origin_run_id:
     cmd += ["--clone-run-id", origin_run_id]
-result = subprocess.run(cmd, capture_output=True, text=True)
+%(init_env_block)s
+result = subprocess.run(cmd, capture_output=True, text=True%(init_env_kwarg)s)
 if result.stdout:
     print(result.stdout[-2000:])
 if result.stderr:
@@ -671,7 +730,8 @@ if result.returncode != 0:
     )
 
 Kestra.outputs({"run_id": run_id, "params_task_id": params_task_id})
-""" % {"params_block": params_block, "param_args": param_args_str}
+""" % {"params_block": params_block, "param_args": param_args_str,
+       "init_env_block": init_env_block, "init_env_kwarg": init_env_kwarg}
 
     def _step_script(
         self,
@@ -688,10 +748,6 @@ from kestra import Kestra
 FLOW_FILE = "{{ vars.FLOW_FILE }}"
 DATASTORE_TYPE = "{{ vars.DATASTORE_TYPE }}"
 DATASTORE_ROOT = "{{ vars.DATASTORE_ROOT }}"
-if DATASTORE_TYPE == "local":
-    _sysroot = os.environ.get("METAFLOW_DATASTORE_SYSROOT_LOCAL")
-    if _sysroot:
-        DATASTORE_ROOT = os.path.join(_sysroot, ".metaflow")
 
 run_id = "{{ outputs.metaflow_init.vars.run_id }}"
 task_id = %(task_id_expr)s
@@ -706,6 +762,10 @@ env.update({
     "METAFLOW_KESTRA_EXECUTION_ID": "{{ execution.id }}",
     "METAFLOW_KESTRA_NAMESPACE": "{{ vars.KESTRA_NAMESPACE }}",
     "METAFLOW_KESTRA_FLOW_ID": "{{ flow.id }}",
+    # Pin the datastore sysroot to the parent of DATASTORE_ROOT so that the Metaflow
+    # step subprocess writes artifacts to the same location the deployer reads from,
+    # even if the Kestra worker container has a different METAFLOW_DATASTORE_SYSROOT_LOCAL.
+    "METAFLOW_DATASTORE_SYSROOT_LOCAL": os.path.dirname(DATASTORE_ROOT),
 %(env_overrides)s
 })
 
@@ -882,6 +942,15 @@ input_paths = ",".join(
     def _build_env_overrides_str(self, node) -> str:
         """Indented ``"key": "val",`` lines for @environment vars to inject at runtime."""
         lines = []
+        # Propagate compile-time config values so config_expr / @project decorators
+        # evaluate correctly at task runtime.  The value is base64-encoded in the
+        # METAFLOW_FLOW_CONFIG_VALUE_B64 variable to avoid YAML/Pebble quoting issues
+        # with JSON curly braces and double quotes.
+        if self._flow_config_value is not None:
+            lines.append(
+                '    "METAFLOW_FLOW_CONFIG_VALUE": '
+                '__import__("base64").b64decode("{{ vars.METAFLOW_FLOW_CONFIG_VALUE_B64 }}").decode(),'
+            )
         # When the flow uses @project, pin USER to the compile-time username so that
         # Metaflow's get_username() inside the Kestra worker returns the same user
         # as at deploy time.  Without this, workers with a different USERNAME env var
@@ -1014,8 +1083,19 @@ except Exception:
     # ------------------------------------------------------------------
 
     def _get_parameters(self) -> dict:
+        # Config-type parameters are baked into METAFLOW_FLOW_CONFIG_VALUE at
+        # compile time and must NOT be passed as CLI args to `metaflow init` or
+        # step invocations (the init command does not accept --config-name args).
+        try:
+            from metaflow.user_configs.config_parameters import Config as _Config
+        except ImportError:
+            _Config = None
+
         params = {}
         for var, param in self.flow._get_parameters():
+            if _Config is not None and isinstance(param, _Config):
+                # Skip Config objects: they are serialized via METAFLOW_FLOW_CONFIG_VALUE
+                continue
             default = param.kwargs.get("default")
             if callable(default):
                 default = None

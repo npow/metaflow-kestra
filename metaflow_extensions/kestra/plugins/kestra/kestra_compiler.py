@@ -397,10 +397,17 @@ class KestraCompiler:
             chain = self._build_foreach_chain(node.name)
             # Mark body steps as visited so they are not emitted again at the
             # top level after being rendered inside the ForEach wrapper.
-            # Do NOT mark join steps as visited here: the outermost join must
-            # be rendered after the ForEach wrapper via _visit_node below.
+            # For nested foreach (chain depth > 1), the inner join steps are
+            # rendered inside the outer ForEach body and must also be marked
+            # visited so they are not re-emitted at the top level.
+            # The outermost join is NOT marked here: it must be rendered after
+            # the ForEach wrapper via _visit_node below.
             for _foreach_name, body_name, _join_name in chain:
                 visited.add(body_name)
+            # Mark inner join steps (all joins except the outermost) as visited
+            for chain_entry in chain[1:]:
+                _inner_foreach_name, _inner_body, inner_join = chain_entry
+                visited.add(inner_join)
             # Emit the outermost ForEach wrapper (which nests inner ones recursively)
             out.append(self._render_foreach_chain(chain, indent=indent))
             # Continue with the step after the outermost join
@@ -514,10 +521,15 @@ class KestraCompiler:
         body_name = self.graph[foreach_step_name].out_funcs[0]
         return self.graph[body_name].out_funcs[0]
 
-    def _render_foreach_chain(self, chain: list, indent: int) -> str:
+    def _render_foreach_chain(self, chain: list, indent: int, is_nested: bool = False) -> str:
         """Recursively render nested ForEach wrappers for the given chain.
 
         chain: list of (foreach_name, body_name, join_name) tuples, outermost first.
+        is_nested: True when this ForEach is rendered inside another ForEach body.
+            In that case, ``foreach_name`` is itself a ForEach body step, so its
+            outputs are stored as outputs[foreach_name][taskrun.value].vars.* in Kestra's
+            template context.  The ForEach ``values`` expression must be scoped with
+            ``[taskrun.value]`` to access the current outer-iteration's foreach_values.
         Returns the YAML string for the outermost ForEach task (inner ones are nested).
         """
         foreach_name, body_name, _join_name = chain[0]
@@ -525,10 +537,19 @@ class KestraCompiler:
         body_node = self.graph[body_name]
         pad = " " * indent
 
+        # When this foreach step itself ran inside a parent ForEach, Kestra stores
+        # its outputs under outputs[foreach_name][taskrun.value].vars.*.  Use the
+        # [taskrun.value] scope so the inner ForEach resolves the correct iteration's
+        # foreach_values (taskrun.value is the parent ForEach's current iteration index).
+        if is_nested:
+            values_expr = "{{ outputs.%s[taskrun.value].vars.foreach_values }}" % foreach_name
+        else:
+            values_expr = "{{ outputs.%s.vars.foreach_values }}" % foreach_name
+
         lines = [
             "%s- id: foreach_%s" % (pad, foreach_name),
             "%s  type: io.kestra.plugin.core.flow.ForEach" % pad,
-            "%s  values: \"{{ outputs.%s.vars.foreach_values }}\"" % (pad, foreach_name),
+            "%s  values: \"%s\"" % (pad, values_expr),
             "%s  concurrencyLimit: %d" % (pad, self.max_workers),
             "%s  tasks:" % pad,
         ]
@@ -537,7 +558,10 @@ class KestraCompiler:
             # The body step is itself a foreach: emit it as a step task first, then
             # nest its own ForEach wrapper inside this one.
             inner_body_script = self._step_script(
-                body_node, is_foreach_body=True, foreach_parent=foreach_name
+                body_node,
+                is_foreach_body=True,
+                foreach_parent=foreach_name,
+                foreach_parent_is_nested=is_nested,
             )
             lines.append(self._task_block(
                 task_id=body_node.name,
@@ -546,12 +570,38 @@ class KestraCompiler:
                 indent=indent + 4,
                 extras=self._build_task_extras(body_node),
             ))
-            # Recursively render the inner foreach chain
-            lines.append(self._render_foreach_chain(chain[1:], indent=indent + 4))
+            # Recursively render the inner foreach chain.
+            # The inner chain IS nested (the inner foreach step ran inside this ForEach).
+            lines.append(self._render_foreach_chain(chain[1:], indent=indent + 4, is_nested=True))
+            # After the inner foreach completes, emit the inner join step.
+            # The inner join runs once per outer iteration (inside this ForEach body),
+            # so its task ID must incorporate the outer taskrun.value to be unique.
+            inner_foreach_name, _inner_body_name, inner_join_name = chain[1]
+            inner_join_node = self.graph[inner_join_name]
+            # The inner_foreach_name step ran as a body of the CURRENT ForEach
+            # (which is rendered at this level), so its outputs are always stored as
+            # outputs[inner_foreach_name][taskrun.value].vars.* (nested dict).
+            # Therefore nested_join_inner_foreach_is_nested is always True here.
+            inner_join_script = self._step_script(
+                inner_join_node,
+                is_nested_join=True,
+                nested_join_inner_foreach=inner_foreach_name,
+                nested_join_inner_foreach_is_nested=True,
+            )
+            lines.append(self._task_block(
+                task_id=inner_join_node.name,
+                task_type="io.kestra.plugin.scripts.python.Script",
+                script=inner_join_script,
+                indent=indent + 4,
+                extras=self._build_task_extras(inner_join_node),
+            ))
         else:
             # Leaf level: render the actual body step
             body_script = self._step_script(
-                body_node, is_foreach_body=True, foreach_parent=foreach_name
+                body_node,
+                is_foreach_body=True,
+                foreach_parent=foreach_name,
+                foreach_parent_is_nested=is_nested,
             )
             lines.append(self._task_block(
                 task_id=body_node.name,
@@ -738,8 +788,31 @@ Kestra.outputs({"run_id": run_id, "params_task_id": params_task_id})
         node,
         is_foreach_body: bool = False,
         foreach_parent: Optional[str] = None,
+        foreach_parent_is_nested: bool = False,
+        is_nested_join: bool = False,
+        nested_join_inner_foreach: Optional[str] = None,
+        nested_join_inner_foreach_is_nested: bool = False,
     ) -> str:
-        """Generate the Python script for a single Metaflow step task."""
+        """Generate the Python script for a single Metaflow step task.
+
+        is_foreach_body: True when this step is the body of a ForEach (uses
+            taskrun.value as the split index).
+        foreach_parent: the name of the foreach step whose output provides the
+            input_path for this foreach body step.
+        foreach_parent_is_nested: True when the foreach_parent step itself ran
+            inside a parent ForEach.  In that case Kestra stores its outputs under
+            outputs[foreach_parent][taskrun.value].vars.* and we must use JSON
+            parsing to extract input_path at runtime.
+        is_nested_join: True when this is a join step that runs inside an
+            enclosing ForEach body (nested foreach).  Its task ID uses
+            taskrun.value from the enclosing foreach so each outer iteration
+            gets a unique task ID (e.g. run_id + "-inner_join-0").
+        nested_join_inner_foreach: the name of the inner foreach step whose
+            foreach_count output is used to reconstruct input_paths for this
+            nested join.
+        nested_join_inner_foreach_is_nested: True when the inner foreach step
+            itself ran inside a parent ForEach (applies to deeply nested cases).
+        """
         max_retries, _ = self._get_retry_config(node)
         script = """\
 import json, os, subprocess, sys, tempfile
@@ -750,8 +823,8 @@ DATASTORE_TYPE = "{{ vars.DATASTORE_TYPE }}"
 DATASTORE_ROOT = "{{ vars.DATASTORE_ROOT }}"
 
 run_id = "{{ outputs.metaflow_init.vars.run_id }}"
-task_id = %(task_id_expr)s
 %(split_index_block)s
+task_id = %(task_id_expr)s
 %(input_paths_code)s
 output_fd, output_file = tempfile.mkstemp(suffix=".json")
 os.close(output_fd)
@@ -810,43 +883,167 @@ kestra_out = {
 %(artifact_hint)s
 Kestra.outputs(kestra_out)
 """ % {
-            "task_id_expr": self._build_task_id_expr(node.name, is_foreach_body),
-            "split_index_block": 'split_index = int("{{ taskrun.value }}")' if is_foreach_body else "",
-            "input_paths_code": self._build_input_paths_code(node, is_foreach_body, foreach_parent),
+            "task_id_expr": self._build_task_id_expr(
+                node.name, is_foreach_body, is_nested_join,
+                foreach_parent_is_nested=foreach_parent_is_nested,
+                foreach_parent=foreach_parent,
+            ),
+            "split_index_block": self._build_split_index_block(
+                is_foreach_body, foreach_parent_is_nested, foreach_parent
+            ),
+            "input_paths_code": self._build_input_paths_code(
+                node, is_foreach_body, foreach_parent,
+                foreach_parent_is_nested=foreach_parent_is_nested,
+                is_nested_join=is_nested_join,
+                nested_join_inner_foreach=nested_join_inner_foreach,
+                nested_join_inner_foreach_is_nested=nested_join_inner_foreach_is_nested,
+            ),
             "env_overrides": self._build_env_overrides_str(node),
             "top_args": self._build_top_args_str(node),
             "step_args": self._build_step_args_str(node.name, max_retries, is_foreach_body),
             "step_name": node.name,
-            "kestra_outputs_code": self._build_kestra_outputs_code(node.type),
+            "kestra_outputs_code": self._build_kestra_outputs_code(
+                node.type,
+                is_nested_foreach_body=(is_foreach_body and node.type == "foreach"),
+            ),
             "artifact_hint": self._build_artifact_hint_code(node.name),
         }
         script = re.sub(r"\n{3,}", "\n\n", script)
         return script.strip()
 
-    def _build_task_id_expr(self, step_name: str, is_foreach_body: bool) -> str:
-        """Python expression string that evaluates to the Metaflow task ID at runtime."""
+    def _build_task_id_expr(
+        self,
+        step_name: str,
+        is_foreach_body: bool,
+        is_nested_join: bool = False,
+        foreach_parent_is_nested: bool = False,
+        foreach_parent: Optional[str] = None,
+    ) -> str:
+        """Python expression string that evaluates to the Metaflow task ID at runtime.
+
+        For foreach body steps running inside a nested ForEach (foreach_parent_is_nested),
+        the task ID must incorporate both the outer and inner iteration indices to avoid
+        collisions across outer iterations (e.g. run_id-inner-0-0 vs run_id-inner-1-0).
+        The outer index is extracted from outputs[foreach_parent] at runtime.
+        """
         if is_foreach_body:
+            if foreach_parent_is_nested and foreach_parent:
+                # This step runs inside a nested ForEach.  Its task ID must include
+                # the outer iteration index to avoid ID collisions across outer iterations.
+                # taskrun.value is encoded as "<outer_idx>-<inner_idx>" by the parent
+                # foreach step.  _outer_idx and split_index are decoded in split_index_block.
+                return (
+                    '"{{ outputs.metaflow_init.vars.run_id }}" + "-%(step_name)s-" '
+                    '+ str(_outer_idx) + "-" + str(split_index)'
+                    % {"step_name": step_name}
+                )
+            return (
+                '"{{ outputs.metaflow_init.vars.run_id }}" + "-%(step_name)s-" + str(int("{{ taskrun.value }}"))'
+                % {"step_name": step_name}
+            )
+        if is_nested_join:
+            # A join step running inside an enclosing ForEach: each outer iteration
+            # needs a unique task ID, derived from the outer taskrun.value.
             return (
                 '"{{ outputs.metaflow_init.vars.run_id }}" + "-%(step_name)s-" + str(int("{{ taskrun.value }}"))'
                 % {"step_name": step_name}
             )
         return '"{{ outputs.metaflow_init.vars.run_id }}" + "-%s"' % step_name
 
+    def _build_split_index_block(
+        self,
+        is_foreach_body: bool,
+        foreach_parent_is_nested: bool,
+        foreach_parent: Optional[str],
+    ) -> str:
+        """Return Python statement(s) that set split_index (and optionally _outer_idx).
+
+        For simple foreach bodies, split_index = taskrun.value.
+        For nested foreach bodies (foreach_parent ran inside a parent ForEach),
+        we also extract _outer_idx from the parent step's nested output dict so
+        the task ID can incorporate both indices.
+        """
+        if not is_foreach_body:
+            return ""
+        if foreach_parent_is_nested and foreach_parent:
+            # taskrun.value encodes both the outer and inner iteration indices as
+            # "<outer_idx>-<inner_idx>" (set by the outer foreach step's foreach_values).
+            # Decode them here so task_id and input_paths can use each independently.
+            return """\
+_encoded_val = "{{ taskrun.value }}"
+_outer_idx, _inner_idx_str = _encoded_val.split("-", 1)
+_outer_idx = int(_outer_idx)
+split_index = int(_inner_idx_str)"""
+        return 'split_index = int("{{ taskrun.value }}")'
+
     def _build_input_paths_code(
         self,
         node,
         is_foreach_body: bool,
         foreach_parent: Optional[str],
+        foreach_parent_is_nested: bool = False,
+        is_nested_join: bool = False,
+        nested_join_inner_foreach: Optional[str] = None,
+        nested_join_inner_foreach_is_nested: bool = False,
     ) -> str:
         """Return Python statement(s) that assign ``input_paths`` for this step.
 
         Handles all cases: foreach body, start step, split-switch convergence,
-        foreach join, split join, and the common single-parent case.
+        foreach join, nested foreach join, split join, and the common single-parent case.
+
+        foreach_parent_is_nested: True when foreach_parent itself ran inside a ForEach.
+            In that case outputs[foreach_parent] is a dict keyed by iteration value and
+            we must parse it in Python rather than using a Pebble template expression.
+        nested_join_inner_foreach_is_nested: True when nested_join_inner_foreach itself
+            ran inside a ForEach (e.g. the third level of nesting).
         """
         ntype = node.type
 
         if is_foreach_body:
+            if foreach_parent_is_nested:
+                # foreach_parent ran inside a parent ForEach.  Kestra stores its outputs
+                # as outputs[foreach_parent] = {"<outer_iter>": {vars: {input_path: ...}}}.
+                # _outer_idx is already decoded from the encoded taskrun.value in
+                # split_index_block.  Use it to access the correct outer iteration's output.
+                return """\
+# foreach_parent ran inside a parent ForEach; access via outer index decoded from taskrun.value
+import json as _json
+_parent_outputs_all = _json.loads('''{{ outputs.%(parent)s }}''')
+input_paths = _parent_outputs_all[str(_outer_idx)]["vars"]["input_path"]""" % {
+                    "parent": foreach_parent
+                }
             return 'input_paths = "{{ outputs.%s.vars.input_path }}"' % foreach_parent
+
+        if is_nested_join:
+            # Join step running inside an enclosing ForEach (nested foreach).
+            # Reconstruct input paths from the inner body tasks for this outer iteration.
+            # nested_join_inner_foreach is the inner foreach step whose foreach_count
+            # output tells us how many inner tasks ran in this outer iteration.
+            inner_body_step = node.in_funcs[0]
+            if nested_join_inner_foreach_is_nested:
+                # The inner foreach step ran inside this ForEach's body (i.e. it's a
+                # body step of the current ForEach).  Its outputs are stored as a nested
+                # dict keyed by outer iteration index.
+                # taskrun.value here is the outer iteration index (we're inside foreach_start).
+                # The inner body task IDs include both the outer and inner iteration indices
+                # to avoid cross-iteration collisions.
+                return """\
+# Nested foreach inner join: foreach_parent is also nested, parse output dict
+import json as _json
+_outer_join_idx = int("{{ taskrun.value }}")
+_inner_foreach_out = _json.loads('''{{ outputs.%(inner_foreach)s }}''')
+inner_foreach_count = int(_inner_foreach_out[str(_outer_join_idx)]["vars"]["foreach_count"])
+inner_body_task_ids = [run_id + "-%(inner_body)s-" + str(_outer_join_idx) + "-" + str(i) for i in range(inner_foreach_count)]
+input_paths = ",".join(
+    run_id + "/%(inner_body)s/" + tid for tid in inner_body_task_ids
+)""" % {"inner_foreach": nested_join_inner_foreach, "inner_body": inner_body_step}
+            return """\
+# Nested foreach inner join: reconstruct input paths from inner body task IDs
+inner_foreach_count = int("{{ outputs.%(inner_foreach)s.vars.foreach_count }}")
+inner_body_task_ids = [run_id + "-%(inner_body)s-" + str(i) for i in range(inner_foreach_count)]
+input_paths = ",".join(
+    run_id + "/%(inner_body)s/" + tid for tid in inner_body_task_ids
+)""" % {"inner_foreach": nested_join_inner_foreach, "inner_body": inner_body_step}
 
         if node.name == "start":
             return (
@@ -966,9 +1163,29 @@ input_paths = ",".join(
             ]
         return "\n".join(lines)
 
-    def _build_kestra_outputs_code(self, ntype: str) -> str:
-        """Python code to populate extra Kestra outputs based on step type."""
+    def _build_kestra_outputs_code(
+        self,
+        ntype: str,
+        is_nested_foreach_body: bool = False,
+    ) -> str:
+        """Python code to populate extra Kestra outputs based on step type.
+
+        is_nested_foreach_body: True when this step is both a foreach step AND a
+            foreach body (i.e. the outer step in a nested foreach).  In this case
+            the foreach_values list must encode the outer iteration index so that
+            inner body tasks can recover both the outer and inner indices from their
+            taskrun.value — avoiding task ID collisions across outer iterations.
+        """
         if ntype == "foreach":
+            if is_nested_foreach_body:
+                # Encode outer_idx (= this step's split_index) into each item so the
+                # nested inner body step can recover it from taskrun.value.
+                # Format: "<outer_idx>-<inner_idx>" (e.g. "0-0", "0-1", "1-0").
+                return """\
+if out.get("foreach_cardinality", 0) > 0:
+    fc = out["foreach_cardinality"]
+    kestra_out["foreach_count"] = fc
+    kestra_out["foreach_values"] = [str(split_index) + "-" + str(i) for i in range(fc)]"""
             return """\
 if out.get("foreach_cardinality", 0) > 0:
     fc = out["foreach_cardinality"]

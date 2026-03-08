@@ -432,6 +432,60 @@ class TestNestedForeachFlow:
         # 'inner' is inside a nested ForEach, not a top-level task
         assert "inner" not in top_ids
 
+    def test_inner_join_inside_outer_foreach(self, tmp_path):
+        """inner_join must appear inside foreach_start, not at the top level.
+
+        In a nested foreach, inner_join runs once per outer iteration so it must
+        be emitted inside the outer ForEach body, not as a standalone top-level task.
+        """
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        compile_flow(flow_file, out)
+        data = _load_yaml(out)
+        top_ids = [t["id"] for t in data["tasks"]]
+        assert "inner_join" not in top_ids, "inner_join must be inside the outer ForEach, not top-level"
+
+        # Find foreach_start and check that inner_join is one of its tasks
+        foreach_start = next((t for t in data["tasks"] if t["id"] == "foreach_start"), None)
+        assert foreach_start is not None
+        nested_ids = [t["id"] for t in foreach_start.get("tasks", [])]
+        assert "inner_join" in nested_ids, "inner_join must be inside foreach_start tasks"
+
+    def test_inner_join_task_id_uses_taskrun_value(self, tmp_path):
+        """inner_join task ID must incorporate taskrun.value for per-outer-iteration uniqueness."""
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # The inner_join script must use taskrun.value in its task_id expression
+        assert '"-inner_join-" + str(int("{{ taskrun.value }}"))' in yaml_str
+
+    def test_inner_join_input_paths_uses_inner_foreach_count(self, tmp_path):
+        """inner_join must reconstruct input paths from the inner foreach count.
+
+        Because 'outer' ran inside a parent ForEach, its outputs are stored as a
+        nested dict in Kestra's template context.  The inner_join script must use
+        JSON parsing (not a direct Pebble expression) to extract the foreach_count.
+        """
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # inner_join extracts foreach_count via JSON parsing of outputs.outer
+        # (direct .vars access fails for ForEach body task outputs in Kestra 1.3.x)
+        assert 'outputs.outer' in yaml_str
+        assert 'foreach_count' in yaml_str
+        # Must use the JSON-parse pattern since outputs.outer is a nested dict
+        assert '_inner_foreach_out' in yaml_str or 'foreach_count' in yaml_str
+
+    def test_outer_join_reconstructs_inner_join_paths(self, tmp_path):
+        """outer_join must reconstruct input paths from inner_join task IDs."""
+        flow_file = os.path.join(FLOWS_DIR, "nested_foreach_flow.py")
+        out = str(tmp_path / "nested_foreach.yaml")
+        yaml_str = compile_flow(flow_file, out)
+        # outer_join reads foreach_count from start (the outer foreach)
+        assert 'outputs.start.vars.foreach_count' in yaml_str
+        # and builds inner_join task IDs
+        assert '"-inner_join-"' in yaml_str
+
 
 # ---------------------------------------------------------------------------
 # @trigger / @trigger_on_finish

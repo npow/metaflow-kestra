@@ -35,6 +35,7 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           use-sudo: "false"
+          conda: "false"  # Kestra container needs conda support added to Dockerfile.kestra-dev
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
           pytest-args: "-n 4 -v --tb=short --timeout=180 -k 'runner' --cov-fail-under=0"
           ux-test-config: |

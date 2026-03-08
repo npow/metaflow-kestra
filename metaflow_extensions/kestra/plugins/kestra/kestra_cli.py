@@ -265,7 +265,10 @@ def create(
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
-                    "name": obj.kestra_flow_name,
+                    # Store the Kestra flow ID (e.g. "hello-world-user-npow-helloflow")
+                    # as the deployer name so that DeployedFlow.from_deployment()
+                    # can recover the deployment from just the name.
+                    "name": flow_id,
                     "flow_name": obj.flow.name,
                     "metadata": "{}",
                     "additional_info": {
@@ -275,6 +278,9 @@ def create(
                         "kestra_user": kestra_user,
                         "kestra_password": kestra_password,
                         "kestra_token": kestra_token,
+                        # Store the Metaflow flow class name so _trigger_direct can
+                        # construct the correct pathspec when flow_file is unavailable.
+                        "mf_flow_class": obj.flow.name,
                     },
                 },
                 f,
@@ -541,6 +547,28 @@ def _build_compiler(
     tags=(),
 ) -> KestraCompiler:
     """Construct a KestraCompiler from a Metaflow CLI obj and shared options."""
+    # If --branch was not passed to `kestra create` directly, check whether the
+    # top-level @project decorator already resolved a branch from --branch at the
+    # python flow.py level.  This happens when the Deployer API passes --branch
+    # as a top-level arg (e.g. Deployer(..., branch='myfeature').kestra().create()).
+    # In that case, current.branch_name == "test.myfeature" and we must bake
+    # --branch=myfeature into the compiled YAML so Kestra workers run steps under
+    # the same branch, regardless of the container's USERNAME.
+    effective_branch = branch
+    if effective_branch is None and not production:
+        try:
+            from metaflow import current as _current
+            bn = getattr(_current, "branch_name", None)
+            # Only inherit if the branch was explicitly set (not a user.* default).
+            if bn and not bn.startswith("user.") and not bn.startswith("prod"):
+                # Strip the "test." prefix to recover the raw branch name.
+                if bn.startswith("test."):
+                    effective_branch = bn[len("test."):]
+                else:
+                    effective_branch = bn
+        except Exception:
+            pass
+
     return KestraCompiler(
         name=obj.kestra_flow_name,
         graph=obj.graph,
@@ -558,7 +586,7 @@ def _build_compiler(
         with_decorators=list(with_decorators),
         workflow_timeout=workflow_timeout,
         kestra_namespace=kestra_namespace,
-        branch=branch,
+        branch=effective_branch,
         production=production,
     )
 

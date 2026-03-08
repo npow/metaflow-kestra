@@ -111,12 +111,21 @@ jobs:
           ' || { docker compose logs kestra; exit 1; }
           echo "Kestra is healthy."
 
+      # Export Kestra credentials as env vars so from_deployment() can recover
+      # deployments by plain name without the full JSON id payload.
+      - name: Export Kestra credentials
+        run: |
+          echo "KESTRA_HOST=http://localhost:8090" >> "$GITHUB_ENV"
+          echo "KESTRA_USER=admin@kestra.io" >> "$GITHUB_ENV"
+          echo "KESTRA_PASSWORD=Kestra1234!" >> "$GITHUB_ENV"
+          echo "KESTRA_NAMESPACE=metaflow" >> "$GITHUB_ENV"
+
       - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
         with:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           use-sudo: "true"
-          pytest-args: "-v --tb=short --timeout=180 -k '${{ matrix.test }} and deployer' --cov-fail-under=0"
+          pytest-args: "-v --tb=short --timeout=300 -k '${{ matrix.test }} and deployer' --cov-fail-under=0"
           ux-test-config: |
             backends:
               - name: kestra

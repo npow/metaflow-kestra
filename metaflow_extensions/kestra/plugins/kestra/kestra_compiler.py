@@ -199,6 +199,10 @@ class KestraCompiler:
             ("EVENT_LOGGER_TYPE",self._event_logger_type),
             ("MONITOR_TYPE",     self._monitor_type),
             ("KESTRA_NAMESPACE", self.kestra_namespace),
+            # Capture compile-time username so @project steps derive the same
+            # user.<username> branch even when the Kestra worker has a different
+            # USER/USERNAME environment variable (e.g. "kestra").
+            ("MF_USERNAME",      self.username or ""),
         ]
         for key, val in fixed:
             safe = str(val).replace("\\", "\\\\").replace('"', '\\"')
@@ -353,11 +357,12 @@ class KestraCompiler:
             out.append(self._render_step_task(node, indent=indent))
             # Build the full nested foreach chain (may be depth > 1)
             chain = self._build_foreach_chain(node.name)
-            # Mark all body/join steps inside the chain as visited so they
-            # are not emitted again at the top level.
-            for _foreach_name, body_name, join_name in chain:
+            # Mark body steps as visited so they are not emitted again at the
+            # top level after being rendered inside the ForEach wrapper.
+            # Do NOT mark join steps as visited here: the outermost join must
+            # be rendered after the ForEach wrapper via _visit_node below.
+            for _foreach_name, body_name, _join_name in chain:
                 visited.add(body_name)
-                visited.add(join_name)
             # Emit the outermost ForEach wrapper (which nests inner ones recursively)
             out.append(self._render_foreach_chain(chain, indent=indent))
             # Continue with the step after the outermost join
@@ -614,7 +619,10 @@ class KestraCompiler:
         param_args_str = "\n".join(param_args_lines)
 
         if params:
-            params_items = ['    "%(var)s": "{{ inputs.%(var)s }}"' % {"var": var} for var in params]
+            # Use triple-quoted strings so that parameter values containing
+            # double quotes (e.g. JSON defaults like '{"key": "val"}') do not
+            # break the Python string literal after Kestra template rendering.
+            params_items = ['    "%(var)s": """{{ inputs.%(var)s }}"""' % {"var": var} for var in params]
             params_block = 'params = {\n' + ',\n'.join(params_items) + '\n}'
         else:
             params_block = "params = {}"
@@ -838,6 +846,9 @@ input_paths = ",".join(
         if self.namespace:
             args.append('"--namespace=%s"' % self.namespace.replace("\\", "\\\\").replace('"', '\\"'))
         if self.branch:
+            # Forward the raw branch name (e.g. "myfeature") so Metaflow's @project
+            # decorator resolves it to "test.myfeature" consistently inside the
+            # Kestra worker, regardless of the container's USERNAME.
             args.append('"--branch=%s"' % self.branch.replace("\\", "\\\\").replace('"', '\\"'))
         # Note: --tag is a step-level option, not top-level; tags go in step_args.
         for spec in self._get_decorator_specs(node):
@@ -856,7 +867,9 @@ input_paths = ",".join(
             '"%s"' % step_name,
             '"--run-id"', 'run_id',
             '"--task-id"', 'task_id',
-            '"--retry-count"', '"0"',
+            # Use Kestra's attempt counter so Metaflow sees the correct retry_count
+            # (0 on first attempt, 1 on first retry, etc.)
+            '"--retry-count"', '"{{ taskrun.attemptsCount }}"',
             '"--max-user-code-retries"', '"%d"' % max_retries,
         ]
         for tag in self._tags:
@@ -868,14 +881,20 @@ input_paths = ",".join(
 
     def _build_env_overrides_str(self, node) -> str:
         """Indented ``"key": "val",`` lines for @environment vars to inject at runtime."""
+        lines = []
+        # When the flow uses @project, pin USER to the compile-time username so that
+        # Metaflow's get_username() inside the Kestra worker returns the same user
+        # as at deploy time.  Without this, workers with a different USERNAME env var
+        # (e.g. "kestra") would produce a different user branch (user.kestra vs user.npow).
+        if self._project_info and not self.branch:
+            lines.append('    "USER": "{{ vars.MF_USERNAME }}",')
         env_deco = [d for d in node.decorators if d.name == "environment"]
-        if not env_deco:
-            return ""
-        env_vars = env_deco[0].attributes.get("vars", {})
-        lines = [
-            '    "%s": "%s",' % (k, str(v).replace("\\", "\\\\").replace('"', '\\"'))
-            for k, v in env_vars.items()
-        ]
+        if env_deco:
+            env_vars = env_deco[0].attributes.get("vars", {})
+            lines += [
+                '    "%s": "%s",' % (k, str(v).replace("\\", "\\\\").replace('"', '\\"'))
+                for k, v in env_vars.items()
+            ]
         return "\n".join(lines)
 
     def _build_kestra_outputs_code(self, ntype: str) -> str:

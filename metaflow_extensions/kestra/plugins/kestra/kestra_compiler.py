@@ -837,6 +837,8 @@ input_paths = ",".join(
             args.append('"--with=%s"' % deco.replace("\\", "\\\\").replace('"', '\\"'))
         if self.namespace:
             args.append('"--namespace=%s"' % self.namespace.replace("\\", "\\\\").replace('"', '\\"'))
+        if self.branch:
+            args.append('"--branch=%s"' % self.branch.replace("\\", "\\\\").replace('"', '\\"'))
         # Note: --tag is a step-level option, not top-level; tags go in step_args.
         for spec in self._get_decorator_specs(node):
             args.append('"--with=%s"' % spec.replace("\\", "\\\\").replace('"', '\\"'))

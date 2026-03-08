@@ -254,6 +254,15 @@ class TestProjectFlow:
         # @project qualifies the flow name
         assert "myteam" in yaml_str.lower() or "projectflow" in yaml_str.lower()
 
+    def test_branch_flag_in_step_commands(self, tmp_path):
+        """--branch must appear in every step's runtime command so @project uses the right branch."""
+        flow_file = os.path.join(FLOWS_DIR, "project_flow.py")
+        out = str(tmp_path / "project_branch.yaml")
+        yaml_str = compile_flow(flow_file, out, extra_args=["--branch=ac5f72ac"])
+        assert "--branch=ac5f72ac" in yaml_str, (
+            "--branch flag was not forwarded to step execution commands"
+        )
+
 
 # ---------------------------------------------------------------------------
 # --with option

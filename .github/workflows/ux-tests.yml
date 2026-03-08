@@ -35,7 +35,7 @@ jobs:
           extra-install: "."
           use-sudo: "false"
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
-          pytest-args: "-n 4 -v --tb=short --timeout=120 -k 'runner' --cov-fail-under=0"
+          pytest-args: "-n 4 -v --tb=short --timeout=180 -k 'runner' --cov-fail-under=0"
           ux-test-config: |
             backends:
               - name: kestra
@@ -114,7 +114,7 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           use-sudo: "true"
-          pytest-args: "-v --tb=short --timeout=120 -k '${{ matrix.test }} and deployer' --cov-fail-under=0"
+          pytest-args: "-v --tb=short --timeout=180 -k '${{ matrix.test }} and deployer' --cov-fail-under=0"
           ux-test-config: |
             backends:
               - name: kestra

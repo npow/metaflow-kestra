@@ -125,6 +125,9 @@ jobs:
           metaflow-ref: npow/corral-devstack
           extra-install: "."
           use-sudo: "true"
+          # Use the matrix test name as a suffix so parallel jobs don't conflict
+          # on the coverage artifact name (all share the same github.job value).
+          coverage-artifact-suffix: "${{ matrix.test }}"
           pytest-args: "-v --tb=short --timeout=300 -k '${{ matrix.test }} and deployer' --cov-fail-under=0"
           ux-test-config: |
             backends:

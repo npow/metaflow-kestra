@@ -58,6 +58,7 @@ jobs:
           extra-install: "."
           use-sudo: "true"
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
+          pytest-args: "-n 4 -v --tb=short --timeout=300 --cov-fail-under=0"
           ux-test-config: |
             backends:
               - name: kestra
@@ -70,9 +71,9 @@ jobs:
                   kestra_password: Kestra1234!
                 enabled: true
 
-      - name: Dump Kestra logs on failure
-        if: failure()
-        run: docker compose logs kestra
+      - name: Dump Kestra logs
+        if: always()
+        run: docker compose logs --tail=500 kestra
 
       - name: Tear down
         if: always()

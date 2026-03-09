@@ -4,7 +4,7 @@
 [![E2E](https://github.com/npow/metaflow-kestra/actions/workflows/e2e.yml/badge.svg)](https://github.com/npow/metaflow-kestra/actions/workflows/e2e.yml)
 [![PyPI](https://img.shields.io/pypi/v/metaflow-kestra)](https://pypi.org/project/metaflow-kestra/)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/) [![Docs](https://img.shields.io/badge/docs-mintlify-18a34a?style=flat-square)](https://mintlify.com/npow/metaflow-kestra)
 
 Deploy and run Metaflow flows as Kestra workflows.
 

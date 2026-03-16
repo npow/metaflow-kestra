@@ -53,7 +53,7 @@ jobs:
   # This eliminates serialization (xdist_group) and lets all tests run in parallel.
   deployer-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -73,7 +73,12 @@ jobs:
           - test_config_corner_cases
           - test_branch
           - test_foreach
+          - test_multibody_foreach
+          - test_condition
+          - test_retry_foreach
           - test_nested_foreach
+          - test_resume_hello_world
+          - test_resume_foreach
 
     env:
       COMPOSE_FILE: docker-compose.yaml:docker-compose.gha.yml

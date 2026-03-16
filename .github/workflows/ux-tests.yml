@@ -79,6 +79,13 @@ jobs:
           - test_nested_foreach
           - test_resume_hello_world
           - test_resume_foreach
+        include:
+          # scheduler_only tests have no exec_mode fixture so their pytest ID
+          # is [kestra], not [kestra-deployer]. Drop "and deployer" for them.
+          - test: test_resume_hello_world
+            scheduler_only: true
+          - test: test_resume_foreach
+            scheduler_only: true
 
     env:
       COMPOSE_FILE: docker-compose.yaml:docker-compose.gha.yml
@@ -134,7 +141,7 @@ jobs:
           # Use the matrix test name as a suffix so parallel jobs don't conflict
           # on the coverage artifact name (all share the same github.job value).
           coverage-artifact-suffix: "${{ matrix.test }}"
-          pytest-args: "-v --tb=short --timeout=300 -k '${{ matrix.test }} and deployer' --cov-fail-under=0"
+          pytest-args: "-v --tb=short --timeout=300 -k '${{ matrix.test }}${{ matrix.scheduler_only && '' || ' and deployer' }}' --cov-fail-under=0"
           ux-test-config: |
             backends:
               - name: kestra

@@ -30,9 +30,9 @@ jobs:
       - name: Pin Metaflow local datastore root
         run: echo "METAFLOW_DATASTORE_SYSROOT_LOCAL=$HOME" >> "$GITHUB_ENV"
 
-      - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+      - uses: Netflix/metaflow/.github/actions/run-ux-tests@master
         with:
-          metaflow-ref: npow/corral-devstack
+          metaflow-ref: master
           extra-install: "."
           use-sudo: "false"
           codecov-token: ${{ secrets.CODECOV_TOKEN }}
@@ -132,9 +132,9 @@ jobs:
           echo "KESTRA_PASSWORD=Kestra1234!" >> "$GITHUB_ENV"
           echo "KESTRA_NAMESPACE=metaflow" >> "$GITHUB_ENV"
 
-      - uses: Netflix/metaflow/.github/actions/run-ux-tests@npow/corral-devstack
+      - uses: Netflix/metaflow/.github/actions/run-ux-tests@master
         with:
-          metaflow-ref: npow/corral-devstack
+          metaflow-ref: master
           extra-install: "."
           use-sudo: "true"
           conda: "false"  # steps run in Kestra container which has no conda

@@ -22,6 +22,14 @@ jobs:
   test:
     needs: lint
     runs-on: ubuntu-latest
+    # The "Add coverage comment to PR" step uses
+    # marocchino/sticky-pull-request-comment, which calls the GitHub Issues
+    # API to post/update a comment on the PR. The default GITHUB_TOKEN for
+    # `pull_request` events grants pull-requests: read, so the call returns
+    # 403 ("Resource not accessible by integration") and fails the job.
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -37,18 +45,19 @@ jobs:
           pip install -e ".[dev]"
       - name: Run unit tests with coverage
         run: |
-          # --cov-fail-under=15 reflects the real coverage of the two test
-          # files we run (test_compiler + test_adversarial = ~16% of
-          # metaflow_extensions/kestra). The 80% target was aspirational
-          # and CI has been red on it since 2026-03-16. TODO: add unit
-          # tests for kestra_decorator, kestra_deployer*, kestra_cli, and
-          # raise the threshold incrementally as those land.
-          pytest tests/test_compiler.py tests/test_adversarial.py -v \
+          # 80% threshold matches pyproject.toml [tool.coverage.report].fail_under.
+          # Measured 86% as of 2026-05-09 across these five files.
+          # test_compiler_inprocess.py provides direct coverage of kestra_compiler.py
+          # to complement the subprocess-based test_compiler.py (which exercises
+          # the same paths but is invisible to pytest-cov).
+          pytest tests/test_compiler.py tests/test_adversarial.py \
+            tests/test_decorator.py tests/test_deployer_unit.py \
+            tests/test_compiler_inprocess.py -v \
             --cov=metaflow_extensions \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-report=html:htmlcov \
-            --cov-fail-under=15
+            --cov-fail-under=80
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4

@@ -6,7 +6,7 @@ is available and the Metaflow Deployer API can be used with Kestra.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Dict, Optional, Type
+from typing import TYPE_CHECKING, ClassVar
 
 from metaflow.runner.deployer_impl import DeployerImpl
 
@@ -31,23 +31,23 @@ class KestraDeployer(DeployerImpl):
         Maximum concurrent ForEach body tasks (default: 10).
     """
 
-    TYPE: ClassVar[Optional[str]] = "kestra"
+    TYPE: ClassVar[str | None] = "kestra"
 
-    def __init__(self, deployer_kwargs: Dict[str, str], **kwargs) -> None:
+    def __init__(self, deployer_kwargs: dict[str, str], **kwargs) -> None:
         self._deployer_kwargs = deployer_kwargs
         super().__init__(**kwargs)
 
     @property
-    def deployer_kwargs(self) -> Dict[str, str]:
+    def deployer_kwargs(self) -> dict[str, str]:
         return self._deployer_kwargs
 
     @staticmethod
-    def deployed_flow_type() -> Type["KestraDeployedFlow"]:
+    def deployed_flow_type() -> type[KestraDeployedFlow]:
         from .kestra_deployer_objects import KestraDeployedFlow
 
         return KestraDeployedFlow
 
-    def create(self, **kwargs) -> "KestraDeployedFlow":
+    def create(self, **kwargs) -> KestraDeployedFlow:
         """Deploy this flow to a running Kestra instance.
 
         Parameters

@@ -81,7 +81,8 @@ jobs:
           - test_resume_foreach
         include:
           # scheduler_only tests have no exec_mode fixture so their pytest ID
-          # is [kestra], not [kestra-deployer]. Drop "and deployer" for them.
+          # is [kestra], not [kestra-deployer]. The pytest -k selector below
+          # uses scheduler_only to drop the ` and deployer` suffix.
           - test: test_resume_hello_world
             scheduler_only: true
           - test: test_resume_foreach
@@ -141,7 +142,19 @@ jobs:
           # Use the matrix test name as a suffix so parallel jobs don't conflict
           # on the coverage artifact name (all share the same github.job value).
           coverage-artifact-suffix: "${{ matrix.test }}"
-          pytest-args: "-v --tb=short --timeout=300 -k '${{ matrix.test }}${{ matrix.scheduler_only && '' || ' and deployer' }}' --cov-fail-under=0"
+          # Pick the -k selector with an explicit equality check on
+          # scheduler_only. The previous form
+          #   ${{ matrix.scheduler_only && '' || ' and deployer' }}
+          # was broken: empty strings are falsy in GHA expressions, so the
+          # `&& ''` branch was treated as "false" and the expression always
+          # resolved to ` and deployer`. That filtered out the scheduler_only
+          # tests (collected 0 items, exit code 5). The form below short-
+          # circuits cleanly: when scheduler_only is true, picks matrix.test
+          # alone; otherwise picks `<test> and deployer`.
+          # Bumped --timeout from 300s to 900s: foreach + retry combinations
+          # (test_retry_foreach, test_multibody_foreach) on the kestra
+          # deployer take >5min for the deploy → trigger → poll cycle.
+          pytest-args: "-v --tb=short --timeout=900 -k '${{ matrix.scheduler_only == true && matrix.test || format('{0} and deployer', matrix.test) }}' --cov-fail-under=0"
           ux-test-config: |
             backends:
               - name: kestra

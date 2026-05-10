@@ -37,7 +37,7 @@ class KestraInternalDecorator(StepDecorator):
                     field="kestra-execution-id",
                     value=execution_id,
                     type="kestra-execution-id",
-                    tags=["attempt_id:{0}".format(retry_count)],
+                    tags=[f"attempt_id:{retry_count}"],
                 )
             )
         namespace = os.environ.get("METAFLOW_KESTRA_NAMESPACE")
@@ -47,7 +47,7 @@ class KestraInternalDecorator(StepDecorator):
                     field="kestra-namespace",
                     value=namespace,
                     type="kestra-namespace",
-                    tags=["attempt_id:{0}".format(retry_count)],
+                    tags=[f"attempt_id:{retry_count}"],
                 )
             )
         flow_id = os.environ.get("METAFLOW_KESTRA_FLOW_ID")
@@ -57,7 +57,7 @@ class KestraInternalDecorator(StepDecorator):
                     field="kestra-flow-id",
                     value=flow_id,
                     type="kestra-flow-id",
-                    tags=["attempt_id:{0}".format(retry_count)],
+                    tags=[f"attempt_id:{retry_count}"],
                 )
             )
         if entries:

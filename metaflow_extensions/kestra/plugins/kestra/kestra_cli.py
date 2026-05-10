@@ -35,31 +35,31 @@ def _validate_workflow(flow, graph):
         norm = param.name.lower()
         if norm in seen:
             raise MetaflowException(
-                "Parameter *%s* is specified twice. "
-                "Parameter names are case-insensitive." % param.name
+                f"Parameter *{param.name}* is specified twice. "
+                "Parameter names are case-insensitive."
             )
         seen.add(norm)
         if "default" not in param.kwargs:
             raise MetaflowException(
-                "Parameter *%s* does not have a default value. "
-                "A default value is required when deploying to Kestra." % param.name
+                f"Parameter *{param.name}* does not have a default value. "
+                "A default value is required when deploying to Kestra."
             )
 
     for node in graph:
         if node.parallel_foreach:
             raise NotSupportedException(
-                "Step *%s* uses @parallel which is not supported with Kestra." % node.name
+                f"Step *{node.name}* uses @parallel which is not supported with Kestra."
             )
         # @resources is supported: CPU/memory/GPU hints are forwarded as --with flags
         # at runtime so compute backends (e.g. @kubernetes, @sandbox) receive them.
         if any(d.name == "batch" for d in node.decorators):
             raise NotSupportedException(
-                "Step *%s* uses @batch which is not supported with Kestra. "
-                "Use @kubernetes or remove the decorator." % node.name
+                f"Step *{node.name}* uses @batch which is not supported with Kestra. "
+                "Use @kubernetes or remove the decorator."
             )
         if any(d.name == "slurm" for d in node.decorators):
             raise NotSupportedException(
-                "Step *%s* uses @slurm which is not supported with Kestra." % node.name
+                f"Step *{node.name}* uses @slurm which is not supported with Kestra."
             )
 
     # @exit_hook is the only flow-level decorator that remains unsupported
@@ -67,7 +67,7 @@ def _validate_workflow(flow, graph):
         decos = getattr(flow, "_flow_decorators", {}).get(bad)
         if decos:
             raise NotSupportedException(
-                "@%s is not supported with Kestra." % bad
+                f"@{bad} is not supported with Kestra."
             )
 
 
@@ -159,7 +159,7 @@ def compile(
 
     _validate_workflow(obj.flow, obj.graph)
 
-    obj.echo("Compiling *%s* to Kestra YAML..." % obj.kestra_flow_name, bold=True)
+    obj.echo(f"Compiling *{obj.kestra_flow_name}* to Kestra YAML...", bold=True)
 
     compiler = _build_compiler(
         obj, kestra_namespace, max_workers, with_decorators, workflow_timeout,
@@ -171,12 +171,8 @@ def compile(
         f.write(yaml_content)
 
     obj.echo(
-        "Flow *{flow_name}* compiled to Kestra YAML successfully → *{file}*\n"
-        "Deploy with: python {flow_file} kestra create".format(
-            flow_name=obj.kestra_flow_name,
-            file=file,
-            flow_file=os.path.basename(sys.argv[0]),
-        ),
+        f"Flow *{obj.kestra_flow_name}* compiled to Kestra YAML successfully → *{file}*\n"
+        f"Deploy with: python {os.path.basename(sys.argv[0])} kestra create",
         bold=True,
     )
 
@@ -249,7 +245,7 @@ def create(
 ):
     _validate_workflow(obj.flow, obj.graph)
 
-    obj.echo("Compiling *%s* to Kestra YAML..." % obj.kestra_flow_name, bold=True)
+    obj.echo(f"Compiling *{obj.kestra_flow_name}* to Kestra YAML...", bold=True)
 
     compiler = _build_compiler(
         obj, kestra_namespace, max_workers, with_decorators, workflow_timeout,
@@ -329,7 +325,7 @@ def run(
 ):
     _validate_workflow(obj.flow, obj.graph)
 
-    obj.echo("Compiling *%s*..." % obj.kestra_flow_name, bold=True)
+    obj.echo(f"Compiling *{obj.kestra_flow_name}*...", bold=True)
 
     compiler = _build_compiler(
         obj, kestra_namespace, max_workers, with_decorators, workflow_timeout,
@@ -343,24 +339,21 @@ def run(
     _deploy_flow(client, yaml_content, kestra_namespace, obj)
     obj.echo("Triggering execution...", bold=True)
     execution_id = _trigger_execution(client, kestra_namespace, flow_id)
-    execution_url = "%s/ui/executions/%s/%s/%s" % (
-        kestra_host, kestra_namespace, flow_id, execution_id
-    )
-    obj.echo("Execution started: *%s*" % execution_url)
+    execution_url = f"{kestra_host}/ui/executions/{kestra_namespace}/{flow_id}/{execution_id}"
+    obj.echo(f"Execution started: *{execution_url}*")
 
     if wait:
         obj.echo("Waiting for execution to complete...")
         final_state = _wait_for_execution(client, execution_id, obj)
         if final_state == "SUCCESS":
-            obj.echo("Execution *%s* completed successfully." % execution_id, bold=True)
+            obj.echo(f"Execution *{execution_id}* completed successfully.", bold=True)
         else:
             raise KestraException(
-                "Execution %s finished with state: %s\nURL: %s"
-                % (execution_id, final_state, execution_url)
+                f"Execution {execution_id} finished with state: {final_state}\nURL: {execution_url}"
             )
     else:
-        obj.echo("Execution ID: %s" % execution_id)
-        obj.echo("Track it at: %s" % execution_url)
+        obj.echo(f"Execution ID: {execution_id}")
+        obj.echo(f"Track it at: {execution_url}")
 
 
 # ---------------------------------------------------------------------------
@@ -420,16 +413,14 @@ def trigger(
 
     client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
 
-    obj.echo("Triggering execution of *%s* in namespace *%s*..." % (flow_id, kestra_namespace), bold=True)
+    obj.echo(f"Triggering execution of *{flow_id}* in namespace *{kestra_namespace}*...", bold=True)
     execution_id = _trigger_execution(client, kestra_namespace, flow_id, inputs=params or None)
-    execution_url = "%s/ui/executions/%s/%s/%s" % (
-        kestra_host, kestra_namespace, flow_id, execution_id
-    )
-    obj.echo("Execution started: *%s*" % execution_url)
+    execution_url = f"{kestra_host}/ui/executions/{kestra_namespace}/{flow_id}/{execution_id}"
+    obj.echo(f"Execution started: *{execution_url}*")
 
     if deployer_attribute_file:
         _run_id = "kestra-" + hashlib.md5(execution_id.encode()).hexdigest()[:16]
-        pathspec = "%s/%s" % (obj.flow.name, _run_id)
+        pathspec = f"{obj.flow.name}/{_run_id}"
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
@@ -490,19 +481,16 @@ def resume(
     client = _make_client(kestra_host, kestra_user, kestra_password, kestra_token)
 
     obj.echo(
-        "Resuming *%s* from run *%s* in namespace *%s*..."
-        % (flow_id, clone_run_id, kestra_namespace),
+        f"Resuming *{flow_id}* from run *{clone_run_id}* in namespace *{kestra_namespace}*...",
         bold=True,
     )
     execution_id = _trigger_execution(client, kestra_namespace, flow_id, inputs=params)
-    execution_url = "%s/ui/executions/%s/%s/%s" % (
-        kestra_host, kestra_namespace, flow_id, execution_id
-    )
-    obj.echo("Execution started: *%s*" % execution_url)
+    execution_url = f"{kestra_host}/ui/executions/{kestra_namespace}/{flow_id}/{execution_id}"
+    obj.echo(f"Execution started: *{execution_url}*")
 
     if deployer_attribute_file:
         _run_id = "kestra-" + hashlib.md5(execution_id.encode()).hexdigest()[:16]
-        pathspec = "%s/%s" % (obj.flow.name, _run_id)
+        pathspec = f"{obj.flow.name}/{_run_id}"
         with open(deployer_attribute_file, "w") as f:
             json.dump(
                 {
@@ -520,15 +508,14 @@ def resume(
         obj.echo("Waiting for resumed execution to complete...")
         final_state = _wait_for_execution(client, execution_id, obj)
         if final_state == "SUCCESS":
-            obj.echo("Execution *%s* completed successfully." % execution_id, bold=True)
+            obj.echo(f"Execution *{execution_id}* completed successfully.", bold=True)
         else:
             raise KestraException(
-                "Execution %s finished with state: %s\nURL: %s"
-                % (execution_id, final_state, execution_url)
+                f"Execution {execution_id} finished with state: {final_state}\nURL: {execution_url}"
             )
     else:
-        obj.echo("Execution ID: %s" % execution_id)
-        obj.echo("Track it at: %s" % execution_url)
+        obj.echo(f"Execution ID: {execution_id}")
+        obj.echo(f"Track it at: {execution_url}")
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +589,7 @@ def _make_client(host: str, user, password, token):
         )
     session = requests.Session()
     if token:
-        session.headers["Authorization"] = "Bearer %s" % token
+        session.headers["Authorization"] = f"Bearer {token}"
     elif user and password:
         session.auth = (user, password)
     session.headers["Content-Type"] = "application/x-yaml"
@@ -613,7 +600,7 @@ def _make_client(host: str, user, password, token):
 def _deploy_flow(client, yaml_content: str, kestra_namespace: str, obj):
     """Create or update a Kestra flow via the REST API."""
     host = client._kestra_host
-    url = "%s/api/v1/flows" % host
+    url = f"{host}/api/v1/flows"
     try:
         resp = client.post(url, data=yaml_content.encode("utf-8"))
         if resp.status_code in (200, 201):
@@ -626,23 +613,23 @@ def _deploy_flow(client, yaml_content: str, kestra_namespace: str, obj):
             id_match = _re.search(r"^id:\s*(\S+)", yaml_content, _re.MULTILINE)
             ns = ns_match.group(1) if ns_match else kestra_namespace
             fid = id_match.group(1) if id_match else ""
-            put_url = "%s/api/v1/flows/%s/%s" % (host, ns, fid)
+            put_url = f"{host}/api/v1/flows/{ns}/{fid}"
             resp2 = client.put(put_url, data=yaml_content.encode("utf-8"))
             if resp2.status_code in (200, 201):
                 obj.echo("Flow updated successfully on Kestra.")
                 return
             raise KestraException(
-                "Failed to update flow on Kestra (HTTP %d): %s"
-                % (resp2.status_code, resp2.text[:500])
+                f"Failed to update flow on Kestra (HTTP {resp2.status_code}): "
+                f"{resp2.text[:500]}"
             )
         raise KestraException(
-            "Failed to deploy flow to Kestra (HTTP %d): %s"
-            % (resp.status_code, resp.text[:500])
+            f"Failed to deploy flow to Kestra (HTTP {resp.status_code}): "
+            f"{resp.text[:500]}"
         )
     except Exception as exc:
         if isinstance(exc, KestraException):
             raise
-        raise KestraException("Failed to connect to Kestra at %s: %s" % (host, exc)) from exc
+        raise KestraException(f"Failed to connect to Kestra at {host}: {exc}") from exc
 
 
 def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict = None) -> str:
@@ -655,7 +642,7 @@ def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict
         because Kestra returns 404 when Content-Type is application/x-yaml.
     """
     host = client._kestra_host
-    url = "%s/api/v1/executions/%s/%s" % (host, kestra_namespace, flow_id)
+    url = f"{host}/api/v1/executions/{kestra_namespace}/{flow_id}"
     try:
         if inputs:
             # Kestra requires multipart/form-data for inputs; url-encoded returns 404.
@@ -671,21 +658,21 @@ def _trigger_execution(client, kestra_namespace: str, flow_id: str, inputs: dict
             resp = client.post(url, headers={"Content-Type": None})
         if resp.status_code not in (200, 201):
             raise KestraException(
-                "Failed to trigger execution (HTTP %d): %s"
-                % (resp.status_code, resp.text[:500])
+                f"Failed to trigger execution (HTTP {resp.status_code}): "
+                f"{resp.text[:500]}"
             )
         return resp.json()["id"]
     except Exception as exc:
         if isinstance(exc, KestraException):
             raise
-        raise KestraException("Failed to trigger execution: %s" % exc) from exc
+        raise KestraException(f"Failed to trigger execution: {exc}") from exc
 
 
 def _wait_for_execution(client, execution_id: str, obj, poll_interval: int = 5) -> str:
     """Poll until the execution reaches a terminal state and return the state."""
     host = client._kestra_host
     terminal_states = {"SUCCESS", "FAILED", "KILLED", "WARNING"}
-    url = "%s/api/v1/executions/%s" % (host, execution_id)
+    url = f"{host}/api/v1/executions/{execution_id}"
 
     seen_running = False
 
@@ -702,8 +689,8 @@ def _wait_for_execution(client, execution_id: str, obj, poll_interval: int = 5) 
                 if state in terminal_states:
                     return state
             else:
-                obj.echo("Warning: could not poll execution status (HTTP %d)" % resp.status_code)
+                obj.echo(f"Warning: could not poll execution status (HTTP {resp.status_code})")
         except Exception as exc:
-            obj.echo("Warning: error polling execution: %s" % exc)
+            obj.echo(f"Warning: error polling execution: {exc}")
 
         time.sleep(poll_interval)

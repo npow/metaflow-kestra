@@ -5,19 +5,19 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import TYPE_CHECKING, ClassVar, Optional
+from typing import TYPE_CHECKING, ClassVar
 
 import metaflow
 from metaflow.exception import MetaflowNotFound
 from metaflow.runner.deployer import DeployedFlow, TriggeredRun
-from metaflow.runner.utils import get_lower_level_group, handle_timeout, temporary_fifo
 from metaflow.runner.subprocess_manager import SubprocessManager
+from metaflow.runner.utils import get_lower_level_group, handle_timeout, temporary_fifo
 
 if TYPE_CHECKING:
     import metaflow.runner.deployer_impl
 
 
-def _find_flow_for_run_id(run_id: str) -> Optional[str]:
+def _find_flow_for_run_id(run_id: str) -> str | None:
     """Scan the local Metaflow datastore to find which flow class owns ``run_id``.
 
     Returns the flow class name (e.g. ``"HelloFromDeploymentFlow"``) or ``None``.
@@ -77,7 +77,7 @@ class KestraTriggeredRun(TriggeredRun):
     """
 
     @property
-    def kestra_ui(self) -> Optional[str]:
+    def kestra_ui(self) -> str | None:
         """URL to the Kestra UI for this execution, if available."""
         try:
             metadata = self._metadata  # type: ignore[attr-defined]
@@ -113,7 +113,7 @@ class KestraTriggeredRun(TriggeredRun):
                 run_id = pathspec.split("/", 1)[1]
                 flow_name = _find_flow_for_run_id(run_id)
                 if flow_name:
-                    pathspec = "%s/%s" % (flow_name, run_id)
+                    pathspec = f"{flow_name}/{run_id}"
                     self.pathspec = pathspec
 
             return metaflow.Run(pathspec, _namespace_check=False)
@@ -131,7 +131,7 @@ class KestraTriggeredRun(TriggeredRun):
                 os.environ["METAFLOW_DATASTORE_SYSROOT_LOCAL"] = old_sysroot
 
     @property
-    def status(self) -> Optional[str]:
+    def status(self) -> str | None:
         """Return a simple status string based on the underlying Metaflow run."""
         run = self.run
         if run is None:
@@ -146,7 +146,7 @@ class KestraTriggeredRun(TriggeredRun):
 class KestraDeployedFlow(DeployedFlow):
     """A Metaflow flow deployed as a Kestra flow."""
 
-    TYPE: ClassVar[Optional[str]] = "kestra"
+    TYPE: ClassVar[str | None] = "kestra"
 
     @property
     def id(self) -> str:
@@ -183,7 +183,7 @@ class KestraDeployedFlow(DeployedFlow):
         # Must be a list (not tuple) so it passes the Optional[Union[List[str], Tuple[str]]]
         # type check in the Metaflow click API — Tuple[str] means exactly one element,
         # but List[str] accepts any number of elements.
-        run_params = list("%s=%s" % (k, v) for k, v in kwargs.items())
+        run_params = [f"{k}={v}" for k, v in kwargs.items()]
 
         with temporary_fifo() as (attribute_file_path, attribute_file_fd):
             trigger_kwargs = {"deployer_attribute_file": attribute_file_path}
@@ -216,12 +216,12 @@ class KestraDeployedFlow(DeployedFlow):
                 return KestraTriggeredRun(deployer=self.deployer, content=content)
 
         raise RuntimeError(
-            "Error triggering Kestra flow %r" % self.deployer.flow_file
+            f"Error triggering Kestra flow {self.deployer.flow_file!r}"
         )
 
     trigger = run
 
-    def _trigger_direct(self, **kwargs) -> "KestraTriggeredRun":
+    def _trigger_direct(self, **kwargs) -> KestraTriggeredRun:
         """Trigger a Kestra execution directly via REST API (no flow file needed).
 
         Used when this DeployedFlow was recovered via ``from_deployment()`` with
@@ -249,11 +249,11 @@ class KestraDeployedFlow(DeployedFlow):
 
         session = requests.Session()
         if kestra_token:
-            session.headers["Authorization"] = "Bearer %s" % kestra_token
+            session.headers["Authorization"] = f"Bearer {kestra_token}"
         elif kestra_user and kestra_password:
             session.auth = (kestra_user, kestra_password)
 
-        url = "%s/api/v1/executions/%s/%s" % (kestra_host, kestra_namespace, flow_id)
+        url = f"{kestra_host}/api/v1/executions/{kestra_namespace}/{flow_id}"
         inputs = {k: str(v) for k, v in kwargs.items()} if kwargs else None
 
         if inputs:
@@ -264,8 +264,8 @@ class KestraDeployedFlow(DeployedFlow):
 
         if resp.status_code not in (200, 201):
             raise RuntimeError(
-                "Failed to trigger Kestra flow (HTTP %d): %s"
-                % (resp.status_code, resp.text[:500])
+                f"Failed to trigger Kestra flow (HTTP {resp.status_code}): "
+                f"{resp.text[:500]}"
             )
 
         execution_id = resp.json()["id"]
@@ -280,21 +280,19 @@ class KestraDeployedFlow(DeployedFlow):
         )
         if not flow_class_name:
             flow_class_name = "UNKNOWN"
-        pathspec = "%s/%s" % (flow_class_name, run_id)
+        pathspec = f"{flow_class_name}/{run_id}"
 
         content_dict = {
             "pathspec": pathspec,
             "name": self.name,
             "execution_id": execution_id,
-            "execution_url": "%s/ui/executions/%s/%s/%s" % (
-                kestra_host, kestra_namespace, flow_id, execution_id
-            ),
+            "execution_url": f"{kestra_host}/ui/executions/{kestra_namespace}/{flow_id}/{execution_id}",
             "metadata": "{}",
         }
         return KestraTriggeredRun(deployer=self.deployer, content=json.dumps(content_dict))
 
     @classmethod
-    def from_deployment(cls, identifier: str, metadata: Optional[str] = None) -> "KestraDeployedFlow":
+    def from_deployment(cls, identifier: str, metadata: str | None = None) -> KestraDeployedFlow:
         """Recover a KestraDeployedFlow from a deployment identifier.
 
         ``identifier`` can be either:
@@ -305,8 +303,8 @@ class KestraDeployedFlow(DeployedFlow):
           ``KESTRA_USER``, and ``KESTRA_PASSWORD``.  The Kestra flow ID is derived
           from the flow name (lowercase, hyphens).
         """
-        from .kestra_deployer import KestraDeployer
         from .kestra_compiler import flow_name_to_id
+        from .kestra_deployer import KestraDeployer
 
         # Try to parse as JSON first (the full id payload).
         info = None

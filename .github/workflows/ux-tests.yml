@@ -87,6 +87,13 @@ jobs:
             scheduler_only: true
           - test: test_resume_foreach
             scheduler_only: true
+          # `test_retry` is a substring of `test_retry_foreach`, so the
+          # plain -k 'test_retry and deployer' selector matches BOTH and
+          # the test_retry job ran the slow foreach variant twice
+          # (~17min total, well over the 900s timeout). Exclude the
+          # foreach variant explicitly so each job runs exactly one test.
+          - test: test_retry
+            extra_filter: " and not test_retry_foreach"
 
     env:
       COMPOSE_FILE: docker-compose.yaml:docker-compose.gha.yml
@@ -154,7 +161,15 @@ jobs:
           # Bumped --timeout from 300s to 900s: foreach + retry combinations
           # (test_retry_foreach, test_multibody_foreach) on the kestra
           # deployer take >5min for the deploy → trigger → poll cycle.
-          pytest-args: "-v --tb=short --timeout=900 -k '${{ matrix.scheduler_only == true && matrix.test || format('{0} and deployer', matrix.test) }}' --cov-fail-under=0"
+          # matrix.extra_filter (default empty) lets specific entries bolt
+          # extra ` and not <other>` clauses onto the -k selector to disambiguate
+          # tests whose names share a prefix (e.g. test_retry vs test_retry_foreach).
+          pytest-args: "-v --tb=short --timeout=900 -k '${{ matrix.scheduler_only == true && matrix.test || format('{0} and deployer', matrix.test) }}${{ matrix.extra_filter }}' --cov-fail-under=0"
+          # Default `test-files` is `test_basic.py test_config.py test_dag.py`,
+          # which excludes test_resume_*. Without this override the
+          # test_resume_hello_world / test_resume_foreach matrix entries
+          # collect 0 items and exit 5.
+          test-files: "test_basic.py test_config.py test_dag.py test_resume.py"
           ux-test-config: |
             backends:
               - name: kestra

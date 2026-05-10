@@ -22,6 +22,14 @@ jobs:
   test:
     needs: lint
     runs-on: ubuntu-latest
+    # The "Add coverage comment to PR" step uses
+    # marocchino/sticky-pull-request-comment, which calls the GitHub Issues
+    # API to post/update a comment on the PR. The default GITHUB_TOKEN for
+    # `pull_request` events grants pull-requests: read, so the call returns
+    # 403 ("Resource not accessible by integration") and fails the job.
+    permissions:
+      contents: read
+      pull-requests: write
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]

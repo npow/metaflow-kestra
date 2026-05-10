@@ -37,18 +37,21 @@ jobs:
           pip install -e ".[dev]"
       - name: Run unit tests with coverage
         run: |
-          # --cov-fail-under=15 reflects the real coverage of the two test
-          # files we run (test_compiler + test_adversarial = ~16% of
-          # metaflow_extensions/kestra). The 80% target was aspirational
-          # and CI has been red on it since 2026-03-16. TODO: add unit
-          # tests for kestra_decorator, kestra_deployer*, kestra_cli, and
-          # raise the threshold incrementally as those land.
-          pytest tests/test_compiler.py tests/test_adversarial.py -v \
+          # --cov-fail-under=30 reflects the measured in-process coverage of
+          # the four test files below (32% as of 2026-05-09).
+          # The compiler is exercised end-to-end via subprocess by
+          # test_compiler.py/test_adversarial.py; pytest-cov can't see
+          # subprocess coverage so kestra_compiler.py looks ~14% covered
+          # despite ~96 assertions on its YAML output. The 80% target was
+          # aspirational; raise it incrementally as more in-process unit
+          # tests land for kestra_compiler / kestra_cli.
+          pytest tests/test_compiler.py tests/test_adversarial.py \
+            tests/test_decorator.py tests/test_deployer_unit.py -v \
             --cov=metaflow_extensions \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-report=html:htmlcov \
-            --cov-fail-under=15
+            --cov-fail-under=30
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12'
         uses: codecov/codecov-action@v4
